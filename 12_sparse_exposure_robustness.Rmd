@@ -1,0 +1,1046 @@
+---
+title: "Sparse dietary exposure, consumer prevalence and fixed-scale robustness"
+subtitle: "MAMI | simple release | standalone module 12"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    df_print: paged
+---
+
+# Start here: set your local paths, save, then Knit
+
+Only `INPUT_FILE` needs changing when the workbook is not beside this Rmd.
+Use the **same `OUTPUT_ROOT` in every module**. The Rmd itself may be stored anywhere.
+No `.Rproj`, helper `.R` file, configuration file or previous analysis is required.
+Module 14 only reads other modules' completed outputs for its optional review.
+
+```{r user-settings, include=FALSE}
+# A workbook beside this Rmd works with this default. Otherwise enter its full path.
+# Windows example: INPUT_FILE <- "C:/my-study/ALL_DATA_clean_for_analysis.xlsx"
+INPUT_FILE <- "ALL_DATA_clean_for_analysis.xlsx"
+
+# Automatic results folders are created here; keep this outside the public GitHub folder.
+OUTPUT_ROOT <- if (.Platform$OS.type=="windows") "C:/MAMI_results_simple" else "~/MAMI_results_simple"
+AUTO_INSTALL_PACKAGES <- TRUE  # Install missing R packages from CRAN; internet required.
+```
+
+# Objective and verified timing
+
+This file is standalone and reads the unchanged source workbook directly. Maternal diet refers to the **third trimester of pregnancy**; maternal and infant faecal microbiota refer to **one month postpartum**. Statistical input is never sourced from another module. Module 14 optionally reviews completed current-version outputs only.
+
+Tables, figures and logs are saved automatically under `<OUTPUT_ROOT>/12_sparse_exposure_robustness/`. `0.01` is interpreted on the 0–1 relative-abundance scale (**1%**), not 0.01%. Do not compare new q-values with old filtered screens as though the hypothesis families were unchanged.
+
+# Self-contained setup and audited analysis helpers
+
+```{r embedded-setup, include=FALSE}
+MODULE_NAME <- "12_sparse_exposure_robustness"
+# EMBEDDED IN EVERY Rmd: no source() or dependence on another module's results.
+PIPELINE_VERSION <- "MAMI_simple_standalone_1.1.0"
+options(stringsAsFactors=FALSE, scipen=999)
+set.seed(20261027)
+# 0.01 is a PROPORTION: 1%, not 0.01%. The rule is applied BEFORE zero replacement.
+MIN_RELATIVE_ABUNDANCE <- 0.01
+MIN_SAMPLE_PREVALENCE <- 0.50
+CLR_ZERO_REPLACEMENTS <- c(1e-6, 1e-7, 1e-5)
+PRIMARY_ZERO_REPLACEMENT <- 1e-6
+MICRO_MIN_N <- 6L
+PERMANOVA_MIN_N <- 8L
+N_PERMUTATIONS <- 1999L
+BOOTSTRAP_REPLICATES <- 999L
+PLOT_DPI <- 600L
+DIET_REFERENCE_PERIOD <- "Maternal third trimester of gestation (user-confirmed)"
+MICROBIOTA_TIMEPOINT <- "Maternal and infant faecal microbiota: one month postpartum"
+# Arsenic month labels remain as supplied: both milk and urine contain 1m and 2m.
+# Neither urinary ratios nor 16S taxa measure microbial methylation activity.
+# Direct local paths. No project root, configuration file or companion script.
+ACTIVE_RMD <- tryCatch(knitr::current_input(dir=TRUE), error=function(e) "")
+if (!length(ACTIVE_RMD) || !nzchar(ACTIVE_RMD[1])) {
+  ACTIVE_RMD <- if (requireNamespace("rstudioapi", quietly=TRUE))
+    tryCatch(rstudioapi::getSourceEditorContext()$path, error=function(e) "") else ""
+}
+ACTIVE_DIR <- if (length(ACTIVE_RMD)==1L && nzchar(ACTIVE_RMD) && file.exists(ACTIVE_RMD))
+  dirname(normalizePath(ACTIVE_RMD, winslash="/")) else getwd()
+mami_absolute <- function(path, base=ACTIVE_DIR) {
+  if (length(path)!=1L || is.na(path) || !nzchar(trimws(path)))
+    stop("Set a nonempty path in the user-settings chunk at the top of this Rmd.")
+  path <- path.expand(path)
+  if (!grepl("^([A-Za-z]:[/\\\\]|/|\\\\\\\\)", path)) path <- file.path(base,path)
+  normalizePath(path, winslash="/", mustWork=FALSE)
+}
+INPUT_FILE <- mami_absolute(INPUT_FILE)
+if (!file.exists(INPUT_FILE) || dir.exists(INPUT_FILE)) {
+  stop("Input workbook not found: ",INPUT_FILE,
+    ". Edit INPUT_FILE in the first chunk. Use the workbook itself, not its folder.",call.=FALSE)
+}
+if (!grepl("\\.xlsx$", INPUT_FILE, ignore.case=TRUE))
+  stop("INPUT_FILE must be an .xlsx workbook with the six sheets listed in README.md.")
+INPUT_FILE <- normalizePath(INPUT_FILE, winslash="/", mustWork=TRUE)
+OUTPUT_ROOT <- mami_absolute(OUTPUT_ROOT)
+if (.Platform$OS.type=="windows" && nchar(OUTPUT_ROOT,type="bytes")>100L)
+  stop("Choose a short OUTPUT_ROOT in the first chunk, for example C:/MAMI_results_simple.")
+dir.create(OUTPUT_ROOT, recursive=TRUE, showWarnings=FALSE)
+if (!dir.exists(OUTPUT_ROOT)) stop("Cannot create OUTPUT_ROOT: ",OUTPUT_ROOT)
+probe <- file.path(OUTPUT_ROOT,paste0(".write_test_",Sys.getpid()))
+can_write <- tryCatch({writeLines("test",probe);unlink(probe);TRUE},error=function(e)FALSE)
+if (!can_write) stop("OUTPUT_ROOT is not writable. Choose a local folder you can write to.")
+message("Input workbook: ", INPUT_FILE)
+message("Results root: ", OUTPUT_ROOT)
+# Parse the saved document before executing any lengthy analysis.
+knitr::opts_chunk$set(error=FALSE,cache=FALSE)
+if (length(ACTIVE_RMD)==1L && nzchar(ACTIVE_RMD) && file.exists(ACTIVE_RMD)) {
+  saved_lines <- readLines(ACTIVE_RMD,warn=FALSE,encoding="UTF-8")
+  inside_chunk <- FALSE; saved_code <- character(); saved_label <- ""
+  for (line in saved_lines) {
+    if (!inside_chunk && grepl("^```\\{r([ ,}]|$)",line)) {
+      inside_chunk <- TRUE; saved_code <- character(); saved_label <- line
+    } else if (inside_chunk && grepl("^```[[:space:]]*$",line)) {
+      tryCatch(parse(text=saved_code),error=function(e)
+        stop("Syntax error in ",saved_label,": ",conditionMessage(e),call.=FALSE))
+      inside_chunk <- FALSE
+    } else if (inside_chunk) {
+      if (nchar(line,type="bytes")>3000L) stop("R code line exceeds the console-safe length.")
+      saved_code <- c(saved_code,line)
+    }
+  }
+  if (inside_chunk) stop("Unclosed R chunk in the saved document.")
+}
+OUTPUT_DIR <- file.path(OUTPUT_ROOT,MODULE_NAME)
+TABLE_DIR <- file.path(OUTPUT_DIR,"tables")
+FIG_DIR <- file.path(OUTPUT_DIR,"figures_600dpi")
+LOG_DIR <- file.path(OUTPUT_DIR,"logs")
+for (d in c(OUTPUT_DIR,TABLE_DIR,FIG_DIR,LOG_DIR)) dir.create(d,recursive=TRUE,showWarnings=FALSE)
+INPUT_MD5 <- unname(tools::md5sum(INPUT_FILE))
+ANALYSIS_SIGNATURE <- paste(PIPELINE_VERSION,INPUT_MD5,MIN_RELATIVE_ABUNDANCE,
+ MIN_SAMPLE_PREVALENCE,paste(CLR_ZERO_REPLACEMENTS,collapse=","),PRIMARY_ZERO_REPLACEMENT,
+ MICRO_MIN_N,PERMANOVA_MIN_N,N_PERMUTATIONS,BOOTSTRAP_REPLICATES,sep="|")
+signature_file <- file.path(OUTPUT_ROOT,"ANALYSIS_SIGNATURE.txt")
+if (file.exists(signature_file)) {
+  old <- readLines(signature_file,warn=FALSE)
+  if (!length(old) || !identical(old[1],ANALYSIS_SIGNATURE))
+    stop("This output root contains a different workbook/version/filter. Use a NEW output folder; do not merge old and new results.")
+} else writeLines(ANALYSIS_SIGNATURE,signature_file)
+# Remove the old completion receipt at start; a failed run cannot appear complete.
+receipt_file <- file.path(LOG_DIR,"RUN_COMPLETE.csv")
+if (file.exists(receipt_file)) unlink(receipt_file)
+REQUIRED <- c("readxl","dplyr","tidyr","ggplot2","openxlsx","sandwich","lmtest","vegan","scales","knitr")
+missing_packages <- REQUIRED[!vapply(REQUIRED,requireNamespace,logical(1),quietly=TRUE)]
+if (length(missing_packages)) {
+ if (!AUTO_INSTALL_PACKAGES) stop("Install missing packages before knitting: ",paste(missing_packages,collapse=", "))
+ install.packages(missing_packages,repos="https://cloud.r-project.org")
+}
+missing_packages <- REQUIRED[!vapply(REQUIRED,requireNamespace,logical(1),quietly=TRUE)]
+if (length(missing_packages)) stop("Install missing packages: ",paste(missing_packages,collapse=", "))
+suppressPackageStartupMessages({library(dplyr);library(tidyr);library(ggplot2)})
+theme_set(theme_bw(base_size=12)+theme(panel.grid.minor=element_blank(),
+ plot.title=element_text(face="bold"),legend.position="bottom",
+ plot.caption=element_text(size=9,hjust=0),plot.margin=margin(12,15,12,12)))
+
+safe_name <- function(x) {
+ x <- iconv(as.character(x),from="",to="ASCII//TRANSLIT",sub="_")
+ x <- tolower(gsub("[^A-Za-z0-9]+","_",x))
+ make.unique(gsub("^_+|_+$","",gsub("_+","_",x)),sep="_duplicate_")
+}
+NUMERIC_IMPORT_AUDIT <- list()
+FAMILY_CONFLICT_AUDIT <- list()
+strict_numeric <- function(x, label) {
+ raw <- trimws(as.character(x))
+ missing <- is.na(raw) | toupper(raw) %in% c("","NA","N/A","NAN","NULL")
+ # A decimal comma is supported only when it is unambiguously a decimal separator.
+ raw[!missing & grepl("^[+-]?[0-9]+,[0-9]+$",raw)] <-
+   sub(",",".",raw[!missing & grepl("^[+-]?[0-9]+,[0-9]+$",raw)],fixed=TRUE)
+ val <- suppressWarnings(as.numeric(raw)); val[missing] <- NA_real_
+ bad <- !missing & (!is.finite(val))
+ if (any(bad)) stop("Unparseable numeric values in ",label,": ",paste(unique(raw[bad]),collapse=" | "))
+ val
+}
+read_sheet <- function(name) {
+ z <- as.data.frame(readxl::read_excel(INPUT_FILE,sheet=name,.name_repair="minimal",
+   na=c("","NA","N/A","NaN","NULL")),stringsAsFactors=FALSE)
+ original_names <- names(z); names(z) <- safe_name(original_names)
+ if (name %in% c("maternal_foods_48h","maternal_nutrients_48h")) {
+  numeric_cols <- setdiff(names(z),c("sample_id","family_code"))
+ } else if (name=="clinical_data") {
+  numeric_cols <- intersect(c("maternal_age","pregestational_bmi","gestational_age",
+    "siblings","infant_ab_before_1_months","infant_ab_before_1_month","infant_ab_before_2_months"),names(z))
+ } else if (name=="hm_arsenic") {
+  numeric_cols <- intersect(c("asb","as_iii","as_v","dma","mma"),names(z))
+ } else numeric_cols <- grep("^g_",names(z),value=TRUE)
+ for (v in numeric_cols) {
+  before <- paste(class(z[[v]]),collapse="/")
+  z[[v]] <- strict_numeric(z[[v]],paste(name,v,sep="/"))
+  NUMERIC_IMPORT_AUDIT[[length(NUMERIC_IMPORT_AUDIT)+1L]] <<-
+   data.frame(sheet=name,variable=v,class_before=before,class_after="numeric",
+    n=nrow(z),n_nonmissing=sum(is.finite(z[[v]])),n_missing=sum(is.na(z[[v]])))
+ }
+ for (v in names(z)[vapply(z,is.character,logical(1))]) {
+  z[[v]] <- trimws(z[[v]])
+  z[[v]][toupper(z[[v]]) %in% c("","NA","N/A","NAN","NULL")] <- NA_character_
+ }
+ if ("sample_id" %in% names(z)) z$sample_id <- as.character(z$sample_id)
+ if ("family_code" %in% names(z)) z$family_code <- as.character(z$family_code)
+ z
+}
+
+std_family <- function(family_code, sample_id = NULL) {
+  z <- toupper(trimws(as.character(family_code)))
+  z[z %in% c("", "NA", "N/A", "NULL", "NAN")] <- NA_character_
+  z <- sub("\\.0$", "", z)
+  is_w <- !is.na(z) & grepl("^W0*[0-9]+$", z)
+  z[is_w] <- paste0("W", as.integer(sub("^W", "", z[is_w])))
+  is_num <- !is.na(z) & grepl("^0*[0-9]+$", z)
+  z[is_num] <- as.character(as.integer(z[is_num]))
+  is_suffix <- !is.na(z) & grepl("^0*[0-9]+[A-Z]+$", z)
+  z[is_suffix] <- paste0(as.integer(sub("^0*([0-9]+)[A-Z]+$", "\\1", z[is_suffix])),
+                         sub("^0*[0-9]+", "", z[is_suffix]))
+  if (!is.null(sample_id)) {
+    s <- toupper(trimws(as.character(sample_id)))
+    # The DB group identifier is NOT a unique mother/infant identifier.
+    db <- !is.na(s) & grepl("^SDB[0-9]+[A-Z]+[0-9]{2}H$", s)
+    z[db] <- sub("^S(DB[0-9]+[A-Z]+)[0-9]{2}H$", "\\1", s[db])
+    m <- !is.na(s) & grepl("^S[0-9]{3}M[0-9]", s)
+    z[m] <- as.character(as.integer(sub("^S0*([0-9]+)M.*", "\\1", s[m])))
+    # W sample ID is only a fallback when explicit W code is missing.
+    w <- !is.na(s) & grepl("^S[0-9]{3}WM", s) & is.na(z)
+    if (any(w)) z[w] <- paste0("W", as.integer(sub("^S0*([0-9]+)WM.*", "\\1", s[w])))
+  }
+  z
+}
+
+first_present <- function(x) {
+ ix <- which(!is.na(x) & as.character(x)!="")
+ if (!length(ix)) return(x[NA_integer_][1])
+ x[ix[1]]
+}
+family_one <- function(z, sheet="unknown", clinical=FALSE) {
+ if (any(is.na(z$family_id))) stop("Missing participant keys in ",sheet,"; resolve before linking.")
+ cols <- setdiff(names(z),c("sample_id","family_code","family_id"))
+ out <- lapply(split(seq_len(nrow(z)),z$family_id),function(ii) {
+  dd <- z[ii,,drop=FALSE]; ans <- data.frame(family_id=dd$family_id[1])
+  for (v in cols) {
+   values <- unique(dd[[v]][!is.na(dd[[v]]) & as.character(dd[[v]])!=""])
+   if (length(values)>1L) {
+    FAMILY_CONFLICT_AUDIT[[length(FAMILY_CONFLICT_AUDIT)+1L]] <<-
+      data.frame(sheet=sheet,family_id=dd$family_id[1],variable=v,
+       source_sample_ids=paste(dd$sample_id,collapse=";"),
+       conflicting_values=paste(as.character(values),collapse=";"),
+       action=if(clinical) "Family-level value set to NA; exact infant sample match can resolve" else "STOP")
+    if (!clinical) stop("Conflicting repeated dietary records in ",sheet," for ",dd$family_id[1]," / ",v)
+    ans[[v]] <- dd[[v]][NA_integer_][1]
+   } else ans[[v]] <- first_present(dd[[v]])
+  }
+  ans
+ })
+ bind_rows(out)
+}
+# Common exports preserve 0-row schemas; note-only sheets are explicitly not results.
+save_csv <- function(x,name) {
+ if (is.null(x) || !is.data.frame(x)) x <- data.frame()
+ if (!ncol(x)) x <- data.frame(status=character())
+ utils::write.csv(x,file.path(TABLE_DIR,paste0(name,".csv")),row.names=FALSE,na="")
+ invisible(x)
+}
+save_xlsx <- function(tables,name="ALL_TABLES") {
+ wb_out <- openxlsx::createWorkbook()
+ if (!length(tables)) tables <- list(Status=data.frame(status="No eligible analyses"))
+ sn <- make.unique(substr(gsub("[^A-Za-z0-9_]","_",names(tables)),1,27))
+ for (i in seq_along(tables)) {
+  dat <- as.data.frame(tables[[i]])
+  if (!ncol(dat)) dat <- data.frame(status=character())
+  openxlsx::addWorksheet(wb_out,sn[i])
+  openxlsx::writeData(wb_out,sn[i],dat,withFilter=nrow(dat)>0 && ncol(dat)<=50)
+  openxlsx::freezePane(wb_out,sn[i],firstRow=TRUE)
+  openxlsx::addStyle(wb_out,sn[i],openxlsx::createStyle(fgFill="#17324F",fontColour="#FFFFFF",textDecoration="bold"),
+    rows=1,cols=seq_len(ncol(dat)),gridExpand=TRUE)
+  openxlsx::setColWidths(wb_out,sn[i],cols=seq_len(ncol(dat)),widths=18)
+ }
+ openxlsx::saveWorkbook(wb_out,file.path(OUTPUT_DIR,paste0(name,".xlsx")),overwrite=TRUE)
+}
+FIGURE_EXPORT_ROWS <- list()
+save_figure <- function(p,name,width=10.5,height=6.5) {
+ # Preserve plot/statistical content; use bounded filenames and explicit file devices.
+ stem <- gsub("[^A-Za-z0-9_.-]","_",name)
+ if (nchar(stem)>100L) {
+  tf <- tempfile(); writeLines(name,tf,useBytes=TRUE)
+  suffix <- substr(unname(tools::md5sum(tf)),1,10); unlink(tf)
+  stem <- paste0(substr(stem,1,85),"_",suffix)
+ }
+ pdf_path <- file.path(FIG_DIR,paste0(stem,".pdf"))
+ png_path <- file.path(FIG_DIR,paste0(stem,".png"))
+ pdf_device <- if(capabilities("cairo"))grDevices::cairo_pdf else grDevices::pdf
+ with_seed(seed_key(name),function() ggplot2::ggsave(pdf_path,p,width=width,height=height,
+   device=pdf_device,bg="white",limitsize=FALSE))
+ png_error <- NA_character_
+ # ragg works independently of RStudio's plot pane. Never print(p) here.
+ if (file.exists(png_path)) unlink(png_path)
+ tryCatch({
+  if (requireNamespace("ragg",quietly=TRUE)) {
+   with_seed(seed_key(name),function() ggplot2::ggsave(png_path,p,width=width,height=height,
+     device=ragg::agg_png,dpi=PLOT_DPI,bg="white",limitsize=FALSE))
+  } else if(capabilities("cairo")) {
+   with_seed(seed_key(name),function() ggplot2::ggsave(png_path,p,width=width,height=height,
+     device=grDevices::png,type="cairo",dpi=PLOT_DPI,bg="white",limitsize=FALSE))
+  } else stop("No file-based PNG backend; install ragg. The vector PDF remains available.")
+ },error=function(e) { png_error <<- conditionMessage(e)
+  if(file.exists(png_path)) unlink(png_path)
+  warning("PNG export failed for ",name,": ",png_error,call.=FALSE) })
+ FIGURE_EXPORT_ROWS[[length(FIGURE_EXPORT_ROWS)+1L]] <<- data.frame(
+  requested_name=name,file_stem=stem,pdf=pdf_path,
+  png=if(is.na(png_error))png_path else NA_character_,dpi=PLOT_DPI,
+  status=if(is.na(png_error))"complete"else"pdf_only_png_failed",detail=png_error)
+ utils::write.csv(do.call(rbind,FIGURE_EXPORT_ROWS),file.path(LOG_DIR,"FIGURE_EXPORT_MANIFEST.csv"),row.names=FALSE)
+ invisible(p)
+}
+record_session <- function() {
+ writeLines(c("Source workbook:",INPUT_FILE,"","Workbook MD5:",INPUT_MD5,"",
+  "Pipeline version:",PIPELINE_VERSION,"Analysis signature:",ANALYSIS_SIGNATURE,
+  "",DIET_REFERENCE_PERIOD,MICROBIOTA_TIMEPOINT,
+  "The 48h worksheet suffix is not the dietary reference period.",
+  "Microbial RA uses the sum of all supplied genus counts per specimen before subset filtering (not unverified FASTQ read depth).",
+  "Within each eligible analysis set: RA >= 0.01 in >=50%; exclude ambiguous names.",
+  "Only zero microbial RA values are replaced; positives are not given an additive offset.",
+  "CLR uses the retained subcomposition after reclosure; no all-zero or raw-constant taxon discovery.",
+  "Arsenic zeros are NOT replaced. LOD/LOQ and assay units remain unresolved.",
+  "Energy assumed to be kcal/day as in the supplied pipeline; confirm source nutrient units before publication.",
+  "Urine has no creatinine/specific-gravity correction; ratios are not methylation capacity.",
+  "Clinical infant-antibiotic coding may include maternal intrapartum treatment: not in default adjustment.",
+  "Duration-derived feeding is any breastfeeding, not exclusive; boundary timing unverified.",
+  "Genus counts are not genes or strain transmission.","",capture.output(sessionInfo())),
+  file.path(LOG_DIR,"session_and_assumptions.txt"))
+}
+finish_module <- function(status="complete") {
+ if (length(FIGURE_EXPORT_ROWS) && any(vapply(FIGURE_EXPORT_ROWS,
+   function(x)x$status!="complete",logical(1)))) status <- "complete_with_graphics_warnings"
+ save_csv(bind_rows(NUMERIC_IMPORT_AUDIT),"QC_numeric_import")
+ save_csv(bind_rows(FAMILY_CONFLICT_AUDIT),"QC_family_conflicts")
+ record_session()
+ receipt <- data.frame(module=MODULE_NAME,status=status,version=PIPELINE_VERSION,
+  input_md5=INPUT_MD5,analysis_signature=ANALYSIS_SIGNATURE,
+  script_path=if(length(ACTIVE_RMD)==1L && file.exists(ACTIVE_RMD))
+    normalizePath(ACTIVE_RMD,winslash="/")else NA_character_,
+  script_md5=if(length(ACTIVE_RMD)==1 && file.exists(ACTIVE_RMD)) unname(tools::md5sum(ACTIVE_RMD)) else NA_character_,
+  completed_at=as.character(Sys.time()),stringsAsFactors=FALSE)
+ utils::write.csv(receipt,receipt_file,row.names=FALSE)
+ cat("Results directory: ",normalizePath(OUTPUT_DIR,winslash="/"),"\n",sep="")
+ knitr::kable(data.frame(output_file=list.files(OUTPUT_DIR,recursive=TRUE)),caption="Outputs and QC files from this run")
+}
+prep_data <- function() {
+ need <- c("clinical_data","genus_mother_1month","genus_infant_1month",
+  "maternal_foods_48h","maternal_nutrients_48h","hm_arsenic")
+ if (length(setdiff(need,readxl::excel_sheets(INPUT_FILE)))) stop("Required workbook sheets are missing.")
+ clinical <- read_sheet("clinical_data"); foods <- read_sheet("maternal_foods_48h")
+ nutrients <- read_sheet("maternal_nutrients_48h"); arsenic <- read_sheet("hm_arsenic")
+ for (nm in c("clinical","foods","nutrients","arsenic")) {
+  dd <- get(nm); dd$family_id <- std_family(dd$family_code,if(nm=="arsenic") NULL else dd$sample_id)
+  assign(nm,dd)
+ }
+ if ("gender" %in% names(clinical)) clinical$infant_sex <- clinical$gender
+ clinical1 <- family_one(clinical,"clinical_data",clinical=TRUE)
+ food1 <- family_one(foods,"maternal_foods_48h")
+ nutrient1 <- family_one(nutrients,"maternal_nutrients_48h")
+ if (!"energy" %in% names(nutrient1)) stop("Energy must be supplied in maternal_nutrients_48h.")
+ food1$energy <- nutrient1$energy[match(food1$family_id,nutrient1$family_id)]
+ food1$energy_provenance <- ifelse(is.finite(food1$energy)&food1$energy>0,"matched_nutrient_energy","missing_nutrient_energy")
+ food1$energy[!is.finite(food1$energy)|food1$energy<=0] <- NA_real_
+ if(any(is.na(food1$energy))) warning(sum(is.na(food1$energy))," food record(s) lack valid linked energy; no density is imputed.")
+ required <- c("asb","as_iii","as_v","dma","mma","sample_site","timepoint_month")
+ if(!all(required%in%names(arsenic))) stop("Missing arsenic variables.")
+ if(any(as.matrix(arsenic[,c("asb","as_iii","as_v","dma","mma")])<0,na.rm=TRUE)) stop("Negative arsenic measurement.")
+ arsenic$month <- suppressWarnings(as.integer(sub("^([0-9]+).*","\\1",trimws(arsenic$timepoint_month))))
+ arsenic$site <- tolower(trimws(arsenic$sample_site))
+ if(any(is.na(arsenic$month)) || any(!arsenic$month%in%c(1L,2L))) stop("Unexpected arsenic month label.")
+ if(any(is.na(arsenic$site)) || any(!arsenic$site%in%c("milk","urine"))) stop("Unexpected matrix label.")
+ if(any(is.na(arsenic$family_id))) stop("Missing arsenic family key.")
+ arsenic$ias <- arsenic$as_iii+arsenic$as_v
+ arsenic$methylated_as <- arsenic$mma+arsenic$dma
+ arsenic$non_asb_as <- arsenic$ias+arsenic$methylated_as
+ arsenic$total_measured_as <- arsenic$asb+arsenic$non_asb_as
+ arsenic$speciation_den <- arsenic$non_asb_as
+ for (v in c("ias","mma","dma")) arsenic[[paste0("pct_",v)]] <-
+  ifelse(is.finite(arsenic$non_asb_as)&arsenic$non_asb_as>0,100*arsenic[[v]]/arsenic$non_asb_as,NA_real_)
+ arsenic$pct_asb_total <- ifelse(is.finite(arsenic$total_measured_as)&arsenic$total_measured_as>0,
+   100*arsenic$asb/arsenic$total_measured_as,NA_real_)
+ arsenic$dma_mma <- ifelse(is.finite(arsenic$mma)&arsenic$mma>0,arsenic$dma/arsenic$mma,NA_real_)
+ arsenic$mma_ias <- ifelse(is.finite(arsenic$ias)&arsenic$ias>0,arsenic$mma/arsenic$ias,NA_real_)
+ dup <- arsenic %>% count(family_id,site,month,name="n") %>% filter(n>1L)
+ if(nrow(dup)) { save_csv(dup,"ERROR_duplicate_arsenic_keys");stop("Duplicate family/matrix/month rows; no averaging performed.") }
+ repeated_family <- arsenic %>% count(site,family_id,name="n_records") %>% filter(n_records>1L)
+ if(nrow(repeated_family)) {
+  save_csv(repeated_family,"ERROR_repeated_families_within_matrix")
+  stop("Repeated participants within an arsenic matrix: this version assumes the supplied independent month groups. A longitudinal redesign is required; no silent pooling.")
+ }
+ milk <- arsenic[arsenic$site=="milk",,drop=FALSE]
+ urine <- arsenic[arsenic$site=="urine",,drop=FALSE]
+ paired <- inner_join(milk,urine,by=c("family_id","month"),suffix=c("_milk","_urine"))
+ attach <- function(d) d %>% left_join(clinical1,by="family_id") %>%
+  left_join(food1,by="family_id") %>% left_join(nutrient1,by="family_id",suffix=c("","_nutr"))
+ list(arsenic=arsenic,milk=milk,urine=urine,paired=paired,clinical=clinical,clinical1=clinical1,
+  foods=food1,nutrients=nutrient1,milkdata=attach(milk),urinedata=attach(urine),
+  original_clinical=clinical,original_foods=foods,original_nutrients=nutrients)
+}
+
+make_foods <- function(food1, nutrient_lookup=NULL) {
+  combos <- list(
+    seafood_total=c("hake","salmon","mussel","squid","prawns_shrimp","tuna_in_oil"),
+    fish_total=c("hake","salmon","tuna_in_oil"),
+    shellfish_mollusc_total=c("mussel","squid","prawns_shrimp"),
+    nonrice_grain_total=c("white_bread","whole_grain_bread","breakfast_cereals","whole_grain_cereals","pasta","pizza"),
+    cereal_grain_total=c("white_bread","whole_grain_bread","breakfast_cereals","whole_grain_cereals","white_rice","pasta","pizza"),
+    milk_total=c("whole_milk","semi_skimmed_milk","skimmed_milk","condensed_milk"),
+    dairy_total=c("whole_milk","semi_skimmed_milk","skimmed_milk","condensed_milk","cream","milkshake","whole_yogurt","skimmed_yogurt","petit_suisse","curd","cheese_portions","cured_manchego_cheese","fresh_cheese","flan","ice_cream"),
+    wine_total=c("red_wine","white_wine","cava_sparkling_wine"),
+    alcohol_total=c("red_wine","white_wine","cava_sparkling_wine","beer","liqueurs","whisky"),
+    potato_total=c("potato_chips","homemade_fries","roasted_potatoes")
+  )
+  dictionary <- list()
+  for (nm in names(combos)) {
+    cols <- intersect(combos[[nm]], names(food1))
+    dictionary[[nm]] <- data.frame(group=nm, listed_components=paste(combos[[nm]],collapse=" + "),
+                                   observed_components=paste(cols,collapse=" + "),
+                                   missing_components=paste(setdiff(combos[[nm]],cols),collapse=" + "))
+    if (length(cols)!=length(combos[[nm]])) {food1[[nm]] <- rep(NA_real_,nrow(food1)); next}
+    mat <- as.matrix(food1[,cols,drop=FALSE]); storage.mode(mat) <- "numeric"
+    v <- rowSums(mat,na.rm=FALSE)
+    food1[[nm]] <- v
+  }
+  # Energy is NOT in maternal_foods_48h. It comes from the corresponding
+  # record in maternal_nutrients_48h, matched using the already-audited family_id.
+  # Crucially, raw intake and consumer prevalence do not require energy.
+  if (!"family_id" %in% names(food1)) stop("make_foods: family_id is required")
+  nutrient_energy <- rep(NA_real_, nrow(food1))
+  if (!is.null(nutrient_lookup) &&
+      all(c("family_id", "energy") %in% names(nutrient_lookup))) {
+    if (anyDuplicated(nutrient_lookup$family_id))
+      stop("make_foods: nutrient_lookup has repeated family_id; resolve before joining")
+    nutrient_energy <- suppressWarnings(as.numeric(nutrient_lookup$energy[
+      match(food1$family_id, nutrient_lookup$family_id)]))
+  }
+  if (!"energy" %in% names(food1)) food1$energy <- rep(NA_real_, nrow(food1))
+  food1$energy <- suppressWarnings(as.numeric(food1$energy))
+  if (!"energy_provenance" %in% names(food1))
+    food1$energy_provenance <- rep("unavailable", nrow(food1))
+  missing_energy <- !is.finite(food1$energy) | food1$energy <= 0
+  fill_energy <- missing_energy & is.finite(nutrient_energy) & nutrient_energy > 0
+  food1$energy[fill_energy] <- nutrient_energy[fill_energy]
+  food1$energy_provenance[fill_energy] <- "matched_nutrient_energy"
+  usable_energy <- is.finite(food1$energy) & food1$energy > 0
+  food1$energy_provenance[!usable_energy] <- "missing_nutrient_energy"
+  # Never energy-normalize previous d2000 columns again if a helper is reused.
+  raw <- setdiff(names(food1)[vapply(food1,is.numeric,logical(1))],
+                 c("energy", grep("^d2000_", names(food1), value=TRUE)))
+  for (nm in raw) {
+    y <- rep(NA_real_, nrow(food1))
+    valid <- usable_energy & is.finite(food1[[nm]])
+    y[valid] <- 2000 * food1[[nm]][valid] / food1$energy[valid]
+    food1[[paste0("d2000_",nm)]] <- y
+  }
+  if (!all(usable_energy))
+    warning(sum(!usable_energy), " food participant(s) lack valid energy. ",
+            "Consumer prevalence/raw intake are retained; d2000_ density is NA for those participants.")
+  list(data=food1, dictionary=dplyr::bind_rows(dictionary), raw_names=raw)
+}
+make_nutrients <- function(nut) {
+  if (!"energy" %in% names(nut)) stop("No energy variable in maternal_nutrients_48h")
+  raw <- setdiff(names(nut)[vapply(nut,is.numeric,logical(1))],c("energy",grep("^(eadj_|d2000_)",names(nut),value=TRUE)))
+  for (nm in raw) {
+    out <- rep(NA_real_,nrow(nut)); ok <- is.finite(nut[[nm]]) & is.finite(nut$energy) & nut$energy>0
+    if (sum(ok)>=20 && sd(nut[[nm]][ok])>0 && sd(nut$energy[ok])>0) {
+      mod <- lm(nut[[nm]][ok] ~ nut$energy[ok]); out[ok] <- residuals(mod)+mean(nut[[nm]][ok])
+    }
+    nut[[paste0("eadj_",nm)]] <- out
+  }
+  nut
+}
+join_diet <- function(z) {
+  fx <- make_foods(z$foods, nutrient_lookup=z$nutrients)
+  nx <- make_nutrients(z$nutrients)
+  # Replace existing food/nutrient attachments with regenerated, audited columns.
+  target <- function(sample_df) sample_df %>% left_join(z$clinical1,by="family_id") %>%
+    left_join(fx$data %>% select(-any_of(c("sample_id","family_code"))),by="family_id") %>%
+    left_join(nx %>% select(-any_of(c("sample_id","family_code"))),by="family_id",suffix=c("","_nutr"))
+  z$milkdata <- target(z$milk)
+  z$urinedata <- target(z$urine)
+  z$foods <- fx$data; z$nutrients <- nx; z$food_dictionary <- fx$dictionary
+  z
+}
+
+
+# Reproducible test-specific random seeds without changing the caller's RNG state.
+with_seed <- function(seed,fun) {
+ had <- exists(".Random.seed",envir=.GlobalEnv,inherits=FALSE)
+ if (had) old <- get(".Random.seed",envir=.GlobalEnv)
+ on.exit({if(had) assign(".Random.seed",old,envir=.GlobalEnv) else if(exists(".Random.seed",envir=.GlobalEnv,inherits=FALSE)) rm(".Random.seed",envir=.GlobalEnv)},add=TRUE)
+ set.seed(seed); fun()
+}
+seed_key <- function(x) as.integer((20261027 + sum(utf8ToInt(paste(x,collapse="|"))*seq_along(utf8ToInt(paste(x,collapse="|"))))) %% 2147483000)
+bh_full <- function(p) {
+ p <- as.numeric(p); good <- is.finite(p)&p>=0&p<=1
+ out <- rep(NA_real_,length(p))
+ if(any(good)) out[good] <- stats::p.adjust(p[good],method="BH",n=length(p))
+ out
+}
+safe_spear <- function(x,y,min_n=6,B=0L,seed=20261027L) {
+ x <- as.numeric(x);y <- as.numeric(y);ok <- is.finite(x)&is.finite(y)
+ x<-x[ok];y<-y[ok];n<-length(x)
+ res <- data.frame(n=n,rho=NA_real_,rho_ci_low=NA_real_,rho_ci_high=NA_real_,p=NA_real_,
+   bootstrap_valid=0L,ci_method=if(B>0)"paired-row percentile bootstrap" else "not requested",status="not estimated")
+ if(n<min_n) {res$status<-"insufficient complete cases";return(res)}
+ if(length(unique(x))<2 || length(unique(y))<2) {res$status<-"constant variable";return(res)}
+ ct<-suppressWarnings(stats::cor.test(x,y,method="spearman",exact=FALSE))
+ res$rho<-unname(ct$estimate);res$p<-ct$p.value;res$status<-"estimated"
+ if(B>0L) {
+  bs<-with_seed(seed,function() replicate(B,{i<-sample.int(n,n,replace=TRUE);
+    if(length(unique(x[i]))<2 || length(unique(y[i]))<2) NA_real_ else suppressWarnings(cor(x[i],y[i],method="spearman"))}))
+  bs<-bs[is.finite(bs)];res$bootstrap_valid<-length(bs)
+  if(length(bs)>=max(100,ceiling(.8*B))) {
+   ci<-quantile(bs,c(.025,.975),names=FALSE);res$rho_ci_low<-ci[1];res$rho_ci_high<-ci[2]
+  } else res$ci_method<-"too few valid bootstrap replicates"
+ }
+ res
+}
+model_complete <- function(d,exposure,outcome,covariates=character()) {
+ req<-unique(c(exposure,outcome,covariates));missing<-setdiff(req,names(d))
+ if(length(missing)) return(list(data=d[0,,drop=FALSE],status=paste("missing variables",paste(missing,collapse=";"))))
+ good<-complete.cases(d[,req,drop=FALSE])
+ for(v in req) if(is.numeric(d[[v]])) good<-good & is.finite(d[[v]])
+ list(data=d[good,,drop=FALSE],status="ok")
+}
+fit_single <- function(d,exposure,outcome,covariates=c("month","pregestational_bmi"),
+ min_n=15,transform="log1p",min_per_parameter=4,x_center=NULL,x_scale=NULL,
+ standardize=TRUE,allow_repeated=FALSE) {
+ b<-data.frame(n=0L,n_families=0L,n_parameters=NA_integer_,required_n=NA_integer_,
+ beta=NA_real_,se=NA_real_,ci_low=NA_real_,ci_high=NA_real_,p=NA_real_,
+ hc3_se=NA_real_,hc3_ci_low=NA_real_,hc3_ci_high=NA_real_,hc3_p=NA_real_,
+ r2=NA_real_,partial_r2=NA_real_,max_cook=NA_real_,n_cook=NA_integer_,
+ exposure_center=NA_real_,exposure_scale=NA_real_,formula=NA_character_,
+ omitted_constant_covariates="",status="not estimated")
+ cc<-model_complete(d,exposure,outcome,covariates);ss<-cc$data
+ b$n<-nrow(ss);b$n_families<-if("family_id"%in%names(ss))length(unique(ss$family_id)) else nrow(ss)
+ if(cc$status!="ok") {b$status<-cc$status;return(b)}
+ if(b$n<3 || !is.numeric(ss[[exposure]]) || !is.numeric(ss[[outcome]])) {b$status<-"insufficient cases or nonnumeric target";return(b)}
+ if(!is.finite(sd(ss[[exposure]])) || sd(ss[[exposure]])<=0 || sd(ss[[outcome]])<=0) {b$status<-"constant exposure/outcome";return(b)}
+ if(transform=="log1p" && any(ss[[outcome]]<0)) {b$status<-"negative outcome cannot use log1p";return(b)}
+ if(!transform%in%c("identity","log1p")) stop("Unknown outcome transform")
+ if(b$n_families<b$n && !allow_repeated) {b$status<-"repeated family observations: independent-error model not fitted";return(b)}
+ center<-if(!is.null(x_center))x_center else if(standardize)mean(ss[[exposure]]) else 0
+ sc<-if(!is.null(x_scale))x_scale else if(standardize)sd(ss[[exposure]]) else 1
+ if(!is.finite(sc) || sc<=0) {b$status<-"invalid exposure scaling";return(b)}
+ ss$x_z<-(ss[[exposure]]-center)/sc
+ ss$y<-if(transform=="log1p")log1p(ss[[outcome]]) else ss[[outcome]]
+ terms<-"x_z";omitted<-character()
+ for(v in covariates) {
+  if(length(unique(ss[[v]]))<2L) {omitted<-c(omitted,v);next}
+  nm<-paste0("cov_",v)
+  if(is.numeric(ss[[v]])) ss[[nm]]<-as.numeric(scale(ss[[v]])) else ss[[nm]]<-factor(ss[[v]])
+  terms<-c(terms,nm)
+ }
+ ff<-as.formula(paste("y ~",paste(terms,collapse=" + ")))
+ mm<-tryCatch(model.matrix(ff,ss),error=function(e)NULL)
+ b$formula<-paste(deparse(ff),collapse=" ");b$exposure_center<-center;b$exposure_scale<-sc
+ b$omitted_constant_covariates<-paste(omitted,collapse=";")
+ if(is.null(mm)) {b$status<-"model matrix failure";return(b)}
+ b$n_parameters<-ncol(mm);b$required_n<-as.integer(max(min_n,ceiling(min_per_parameter*ncol(mm))))
+ if(nrow(ss)<b$required_n) {b$status<-"insufficient n per parameter";return(b)}
+ if(qr(mm)$rank<ncol(mm) || nrow(mm)<=ncol(mm)+1L) {b$status<-"singular/insufficient residual df";return(b)}
+ fit<-tryCatch(lm(ff,data=ss),error=function(e)NULL)
+ if(is.null(fit)||!"x_z"%in%names(coef(fit))||!is.finite(coef(fit)["x_z"])) {b$status<-"fit failure";return(b)}
+ tb<-coef(summary(fit));ci<-confint(fit,"x_z");b$beta<-unname(coef(fit)["x_z"])
+ b$se<-unname(tb["x_z","Std. Error"]);b$p<-unname(tb["x_z","Pr(>|t|)"])
+ b$ci_low<-ci[1];b$ci_high<-ci[2];b$r2<-summary(fit)$r.squared
+ tt<-unname(tb["x_z","t value"]);b$partial_r2<-tt^2/(tt^2+fit$df.residual)
+ vc<-tryCatch(sandwich::vcovHC(fit,type="HC3"),error=function(e)NULL)
+ if(!is.null(vc) && is.finite(vc["x_z","x_z"]) && vc["x_z","x_z"]>0) {
+  b$hc3_se<-sqrt(vc["x_z","x_z"]);crit<-qt(.975,fit$df.residual)
+  b$hc3_ci_low<-b$beta-crit*b$hc3_se;b$hc3_ci_high<-b$beta+crit*b$hc3_se
+  b$hc3_p<-2*pt(-abs(b$beta/b$hc3_se),df=fit$df.residual)
+ }
+ ck<-cooks.distance(fit);b$max_cook<-max(ck,na.rm=TRUE);b$n_cook<-sum(ck>4/nrow(ss),na.rm=TRUE)
+ b$status<-"estimated";b
+}
+food_prevalence <- function(d,exposure,outcome,raw_col,covariates=c("month","pregestational_bmi")) {
+ cc<-model_complete(d,exposure,outcome,covariates)$data
+ raw<-if(raw_col%in%names(cc))as.numeric(cc[[raw_col]]) else rep(NA_real_,nrow(cc))
+ ok<-is.finite(raw);pos<-raw[ok&raw>0]
+ data.frame(n_with_food=sum(ok),n_consumers=length(pos),
+  consumer_pct=if(sum(ok))100*length(pos)/sum(ok)else NA_real_,
+  n_nonconsumers=sum(ok)-length(pos),nonzero_median=if(length(pos))median(pos)else NA_real_,
+  nonzero_min=if(length(pos))min(pos)else NA_real_,nonzero_max=if(length(pos))max(pos)else NA_real_)
+}
+run_models <- function(d,exposure_vec,outcome_vec,topic,covars=c("month","pregestational_bmi"),
+ min_n=15,transform="log1p",dietary=FALSE) {
+ rows<-list();j<-1L
+ for(o in outcome_vec) for(x in exposure_vec) {
+  if(!all(c(x,o)%in%names(d))) next
+  fit<-fit_single(d,x,o,covars,min_n=min_n,transform=transform)
+  uf<-fit_single(d,x,o,covariates=character(),min_n=min_n,transform=transform)
+  cc<-safe_spear(d[[x]],d[[o]],B=if(grepl("targeted",topic))BOOTSTRAP_REPLICATES else 0L,
+    seed=seed_key(c(topic,x,o)))
+  if(dietary) prev<-food_prevalence(d,x,o,sub("^(d2000_|eadj_)","",x),covars) else
+   prev<-data.frame(n_with_food=NA_integer_,n_consumers=NA_integer_,consumer_pct=NA_real_,n_nonconsumers=NA_integer_,
+    nonzero_median=NA_real_,nonzero_min=NA_real_,nonzero_max=NA_real_)
+  rows[[j]]<-cbind(data.frame(topic=topic,outcome=o,exposure=x,scale=transform,
+    exposure_period=DIET_REFERENCE_PERIOD,effect_type=if(transform=="log1p")"beta in log(1+recorded concentration) per 1 SD exposure"else"beta in outcome units per 1 SD exposure"),
+    fit,data.frame(unadjusted_n=uf$n,unadjusted_beta=uf$beta,unadjusted_ci_low=uf$ci_low,
+    unadjusted_ci_high=uf$ci_high,unadjusted_p=uf$p,unadjusted_status=uf$status,
+    spearman_n=cc$n,rho=cc$rho,rho_ci_low=cc$rho_ci_low,rho_ci_high=cc$rho_ci_high,
+    spearman_p=cc$p,spearman_bootstrap_valid=cc$bootstrap_valid),prev);j<-j+1L
+ }
+ if(!length(rows))return(data.frame(topic=character(),outcome=character(),exposure=character(),p=numeric()))
+ rr<-bind_rows(rows)
+ rr$exposure_support<-ifelse(dietary & is.finite(rr$n_consumers)&(rr$n_consumers<4|rr$n_nonconsumers<4),
+  "Sparse consumer/nonconsumer support",if(dietary)"Report measured consumption frequency"else"Continuous nutrient")
+ rr<-rr %>% group_by(topic,outcome) %>% mutate(fdr_outcome=bh_full(p),hc3_fdr_outcome=bh_full(hc3_p),
+  spearman_fdr_outcome=bh_full(spearman_p),unadjusted_fdr_outcome=bh_full(unadjusted_p),
+  n_hypotheses_outcome=n()) %>% ungroup()
+ rr$fdr_all_tests<-bh_full(rr$p);rr$hc3_fdr_all_tests<-bh_full(rr$hc3_p)
+ rr$spearman_fdr_all_tests<-bh_full(rr$spearman_p);rr$unadjusted_fdr_all_tests<-bh_full(rr$unadjusted_p)
+ rr
+}
+# Model-derived effect CI, nominal p and family q are displayed together.
+plot_coefficients <- function(tab,name,title,top=24) {
+ if(!nrow(tab)||!all(c("beta","p","ci_low","ci_high")%in%names(tab)))return(invisible(NULL))
+ dd<-tab[is.finite(tab$beta)&is.finite(tab$ci_low)&is.finite(tab$ci_high)&is.finite(tab$p),,drop=FALSE]
+ if(!nrow(dd))return(invisible(NULL))
+ dd<-head(dd[order(dd$p),,drop=FALSE],top)
+ qcol<-if("fdr_all_tests"%in%names(dd))"fdr_all_tests"else if("q_all"%in%names(dd))"q_all"else"fdr_outcome"
+ qv<-if(qcol%in%names(dd))dd[[qcol]]else rep(NA_real_,nrow(dd))
+ dd$label<-paste(sub("^(d2000_|eadj_)","",dd$exposure),dd$outcome,sep=" | ")
+ if("matrix"%in%names(dd))dd$label<-paste(dd$matrix,dd$label,sep=" | ")
+ dd$label<-factor(dd$label,levels=rev(unique(dd$label)))
+ dd$annotation<-sprintf("beta %.3f [%.3f, %.3f]; n=%d; p=%.3g; q=%.3g",dd$beta,dd$ci_low,dd$ci_high,dd$n,dd$p,qv)
+ xr<-range(c(dd$ci_low,dd$ci_high,0),finite=TRUE);span<-max(diff(xr),.1)
+ p<-ggplot(dd,aes(x=beta,y=label))+geom_vline(xintercept=0,linetype=2)+
+  geom_segment(aes(x=ci_low,xend=ci_high,yend=label))+geom_point(size=2.6)+
+  geom_text(aes(label=annotation),x=xr[2]+.12*span,hjust=0,size=2.9)+
+  coord_cartesian(xlim=c(xr[1]-.08*span,xr[2]+1.9*span),clip="off")+
+  labs(title=title,subtitle="Exploratory models; display selection does not change the full FDR family",
+   x="Standardized exposure coefficient with conventional 95% CI",y=NULL,
+   caption=paste("q:",qcol,". HC3 estimates, complete-case n and consumers are in the full tables.\nDiet represents the third trimester; urinary concentrations are uncorrected for dilution."))
+ save_figure(p,name,width=16,height=max(6,.38*nrow(dd)+2.5))
+}
+
+# ---------------- Microbiota: eligibility -> raw-RA filter -> zeros -> CLR ----------------
+prepare_micro <- function(sheet) {
+ z<-read_sheet(sheet);z$family_id<-std_family(z$family_code,z$sample_id)
+ taxa<-grep("^g_",names(z),value=TRUE)
+ if(length(taxa)<2L)stop("No genus count matrix in ",sheet)
+ cm<-as.matrix(z[,taxa,drop=FALSE]);storage.mode(cm)<-"numeric"
+ if(any(cm<0,na.rm=TRUE))stop("Negative genus counts in ",sheet)
+ if(any(abs(cm-round(cm))>1e-7,na.rm=TRUE))stop("Expected raw integer genus counts, not relative abundances, in ",sheet)
+ depth<-rowSums(cm,na.rm=FALSE);bad<-rowSums(!is.finite(cm))
+ good<-bad==0L & is.finite(depth)&depth>0 & !is.na(z$family_id)
+ qc<-data.frame(family_id=z$family_id,sample_id=z$sample_id,library_size=depth,
+  n_missing_counts=bad,included=good,reason=ifelse(bad>0,"missing genus counts: row excluded, NOT zero-imputed",
+   ifelse(is.na(z$family_id),"missing participant key",ifelse(!is.finite(depth)|depth<=0,"empty library","eligible"))))
+ if(anyDuplicated(z$family_id[good]))stop("Repeated one-month microbiota family keys: resolve specimen identity in ",sheet)
+ zz<-z[good,,drop=FALSE];cm<-cm[good,,drop=FALSE];depth<-depth[good]
+ ra<-if(length(depth))sweep(cm,1,depth,"/")else cm
+ rownames(cm)<-rownames(ra)<-zz$family_id
+ meta<-data.frame(family_id=zz$family_id,sample_id=zz$sample_id,library_size=depth,
+  observed=rowSums(cm>0),shannon=vegan::diversity(cm,index="shannon"),simpson=vegan::diversity(cm,index="simpson"))
+ # Compatibility fields are DESCRIPTIVES only; named taxon tests use the subset filter.
+ for(v in c("bifidobacterium","faecalibacterium","blautia"))meta[[v]]<-
+  if(paste0("g_",v)%in%colnames(ra))ra[,paste0("g_",v)]else rep(NA_real_,nrow(meta))
+ base<-list(meta=meta,counts=cm,relative=ra,quality=qc,raw_n=nrow(z),sheet=sheet)
+ sf<-subset_micro(base,meta$family_id,paste0(sheet,"_source_QC"))
+ base$taxa_qc<-sf$taxa_audit
+ base$taxa_qc$prevalence<-base$taxa_qc$positive_prevalence
+ base$filtered_ra<-sf$filtered_ra
+ base$clr_matrix<-if(sf$status=="eligible")zero_clr(sf$filtered_ra,PRIMARY_ZERO_REPLACEMENT)else matrix(numeric(),nrow=nrow(meta),ncol=0)
+ base$clr<-data.frame(family_id=meta$family_id,base$clr_matrix,check.names=FALSE)
+ base$clr_pseudocount_rel<-PRIMARY_ZERO_REPLACEMENT
+ base
+}
+zero_clr <- function(ra,delta=PRIMARY_ZERO_REPLACEMENT) {
+ ra<-as.matrix(ra)
+ if(ncol(ra)<2L)stop("CLR requires at least two retained genera")
+ if(any(!is.finite(ra))||any(ra<0))stop("Invalid RA in CLR")
+ if(any(rowSums(ra)<=0))stop("At least one sample has no observed counts in the retained subcomposition")
+ if(length(delta)!=1||!is.finite(delta)||delta<=0)stop("Invalid zero-replacement value")
+ zz<-ra;zz[zz==0]<-delta
+ # Close to unity; CLR is invariant to this row scaling, which is explicit here.
+ zz<-sweep(zz,1,rowSums(zz),"/")
+ lg<-log(zz);ans<-lg-rowMeans(lg)
+ stopifnot(all(is.finite(ans)),max(abs(rowSums(ans)))<1e-8)
+ ans
+}
+subset_micro <- function(micro,ids,analysis_id,threshold=MIN_RELATIVE_ABUNDANCE,prevalence=MIN_SAMPLE_PREVALENCE) {
+ if(anyDuplicated(ids))stop("An analysis contains repeated microbiota participant rows: ",analysis_id)
+ ix<-match(ids,micro$meta$family_id)
+ if(anyNA(ix))stop("Subset contains an unlinked microbiota key: ",analysis_id)
+ cm<-micro$counts[ix,,drop=FALSE];ra<-micro$relative[ix,,drop=FALSE];n<-nrow(ra)
+ nnz<-if(n)colSums(cm>0)else rep(0L,ncol(cm))
+ nab<-if(n)colSums(ra>=threshold)else rep(0L,ncol(cm))
+ amb<-grepl("uncultured|unclassified|unknown",colnames(cm),ignore.case=TRUE)
+ pass<-n>0 & nab>=ceiling(prevalence*n)&nnz>0&!amb
+ vary<-if(n>1)apply(ra,2,function(x)length(unique(x))>1L)else rep(FALSE,ncol(ra))
+ audit<-data.frame(analysis_id=rep(analysis_id,ncol(cm)),taxon=colnames(cm),n_eligible=rep(n,ncol(cm)),
+  n_raw_positive=as.integer(nnz),positive_prevalence=if(n)nnz/n else rep(NA_real_,ncol(cm)),
+  n_at_or_above_threshold=as.integer(nab),prevalence_at_threshold=if(n)nab/n else rep(NA_real_,ncol(cm)),
+  mean_relative_abundance=if(n)colMeans(ra)else rep(NA_real_,ncol(cm)),
+  ra_threshold=rep(threshold,ncol(cm)),required_n_at_threshold=rep(ceiling(prevalence*n),ncol(cm)),
+  selected=pass,raw_ra_varies=vary,
+  reason=ifelse(amb,"ambiguous genus label",ifelse(nnz==0,"all zero within eligible subset",
+   ifelse(!pass,"fails abundance/prevalence rule",ifelse(!vary,"retained reference only: raw RA constant","retained and variable")))))
+ filtered<-ra[,pass,drop=FALSE]
+ mass<-if(ncol(filtered))rowSums(filtered)else rep(0,n)
+ status<-if(n<MICRO_MIN_N)"fewer than six eligible samples"else if(sum(pass)<2L)"fewer than two retained genera"else
+  if(any(mass<=0))"zero retained-library mass in at least one sample: CLR skipped"else"eligible"
+ list(ids=ids,meta=micro$meta[ix,,drop=FALSE],counts=cm,relative=ra,filtered_ra=filtered,
+  retained_taxa=colnames(filtered),taxa_audit=audit,selected_mass=mass,status=status,n=n)
+}
+# Exact clinical sample matches take precedence for infant-specific clinical fields;
+# uncertain family-level values remain NA rather than taking the first twin record.
+attach_micro_clinical <- function(micro,z) {
+ cc<-micro$meta %>% left_join(z$clinical1,by="family_id")
+ if(!anyDuplicated(z$original_clinical$sample_id)) {
+  ix<-match(cc$sample_id,z$original_clinical$sample_id);good<-!is.na(ix)
+  for(v in intersect(setdiff(names(z$clinical1),"family_id"),names(z$original_clinical)))
+   cc[[v]][good]<-z$original_clinical[[v]][ix[good]]
+  cc$clinical_linkage<-ifelse(good,"exact source sample ID","family consensus; conflicts missing")
+ } else cc$clinical_linkage<-"family consensus; exact clinical IDs not unique"
+ cc
+}
+# A single geometry and eligibility set is used per outcome and model; delta is varied
+# without changing the retained taxa. Genus-wise complete-case selection is forbidden.
+micro_analyse <- function(micro,source,outcomes,analysis_id,covariates=character(),
+ model=if(length(covariates))"clinical_sensitivity"else"unadjusted",do_permanova=TRUE) {
+ rows<-list();pr<-list();aa<-list();man<-list();status_rows<-list();k<-1L;kk<-1L
+ if(!"family_id"%in%names(source))stop("Microbial source lacks family_id")
+ if(anyDuplicated(source$family_id))stop("Repeated family in microbiota source; stratify sampling month first")
+ for(o in intersect(outcomes,names(source))) {
+  id<-paste(analysis_id,o,model,sep="__")
+  d<-source[source$family_id%in%micro$meta$family_id,,drop=FALSE]
+  miss<-setdiff(c(o,covariates),names(d))
+  if(length(miss)) {
+   status_rows[[length(status_rows)+1L]]<-data.frame(analysis_id=analysis_id,outcome=o,model=model,n_eligible=0L,
+    n_genera=0L,status=paste("missing covariates",paste(miss,collapse=";")));next
+  }
+  eligible<-complete.cases(d[,c(o,covariates),drop=FALSE])
+  for(v in c(o,covariates))if(is.numeric(d[[v]]))eligible<-eligible&is.finite(d[[v]])
+  if(!is.numeric(d[[o]]))stop("Nonnumeric exposure: ",o)
+  man[[length(man)+1L]]<-data.frame(analysis_id=rep(analysis_id,nrow(d)),outcome=rep(o,nrow(d)),model=rep(model,nrow(d)),
+   family_id=d$family_id,included=eligible,reason=ifelse(eligible,"eligible before filtering","outcome/ratio denominator or covariate missing"))
+  d<-d[eligible,,drop=FALSE]
+  sub<-subset_micro(micro,d$family_id,id);aa[[length(aa)+1L]]<-sub$taxa_audit
+  status_rows[[length(status_rows)+1L]]<-data.frame(analysis_id=analysis_id,outcome=o,model=model,
+   n_eligible=sub$n,n_genera=length(sub$retained_taxa),status=sub$status)
+  if(sub$status!="eligible")next
+  # Untransformed relative abundance is an explicit compositional sensitivity analysis.
+  methods<-c(sprintf("CLR_zero_%g",CLR_ZERO_REPLACEMENTS),"raw_RA_sensitivity")
+  for(method in methods) {
+   delta<-if(method=="raw_RA_sensitivity")NA_real_ else as.numeric(base::sub("^CLR_zero_","",method))
+   response_mat<-if(is.na(delta))sub$filtered_ra else zero_clr(sub$filtered_ra,delta)
+   for(tax in colnames(response_mat)) {
+    raw<-sub$relative[,tax];nonconstant<-length(unique(raw))>1L
+    common<-data.frame(analysis_id=analysis_id,exposure=o,feature=tax,model=model,method=method,
+     pseudocount=delta,is_primary=identical(model,"unadjusted")&&is.finite(delta)&&delta==PRIMARY_ZERO_REPLACEMENT,
+     n=sub$n,n_raw_positive=sum(sub$counts[,tax]>0),n_at_threshold=sum(raw>=MIN_RELATIVE_ABUNDANCE),
+     positive_pct=100*mean(sub$counts[,tax]>0),threshold_pct=100*mean(raw>=MIN_RELATIVE_ABUNDANCE),
+     n_genera_in_CLR=length(sub$retained_taxa),minimum_retained_mass=min(sub$selected_mass),
+     covariates=paste(covariates,collapse=";"),effect_type=if(length(covariates))
+      if(is.na(delta))"RA change per 1-SD exposure"else"CLR change per 1-SD exposure"else"Spearman rho")
+    rr<-data.frame(estimate=NA_real_,ci_low=NA_real_,ci_high=NA_real_,rho=NA_real_,beta=NA_real_,
+     p=NA_real_,hc3_p=NA_real_,hc3_ci_low=NA_real_,hc3_ci_high=NA_real_,partial_r2=NA_real_,
+     n_parameters=NA_integer_,required_n=NA_integer_,bootstrap_valid=NA_integer_,ci_method="not estimated",status="raw relative abundance constant")
+    if(nonconstant) {
+     if(!length(covariates)) {
+      ss<-safe_spear(d[[o]],response_mat[,tax],B=if(is.finite(delta)&&delta==PRIMARY_ZERO_REPLACEMENT)BOOTSTRAP_REPLICATES else 0L,
+         seed=seed_key(c(id,tax)))
+      rr$estimate<-rr$rho<-ss$rho;rr$p<-ss$p;rr$ci_low<-ss$rho_ci_low;rr$ci_high<-ss$rho_ci_high;rr$status<-ss$status;rr$bootstrap_valid<-ss$bootstrap_valid;rr$ci_method<-ss$ci_method
+     } else {
+      dd<-d;dd$microbial_response<-response_mat[,tax]
+      ff<-fit_single(dd,o,"microbial_response",covariates=covariates,min_n=15,transform="identity")
+      rr$estimate<-rr$beta<-ff$beta;rr$ci_low<-ff$ci_low;rr$ci_high<-ff$ci_high
+      rr$p<-ff$p;rr$hc3_p<-ff$hc3_p;rr$hc3_ci_low<-ff$hc3_ci_low;rr$hc3_ci_high<-ff$hc3_ci_high
+      rr$partial_r2<-ff$partial_r2;rr$n_parameters<-ff$n_parameters;rr$required_n<-ff$required_n;rr$status<-ff$status;rr$ci_method<-"Conventional t interval; separate HC3 t interval"
+     }
+    }
+    rows[[k]]<-cbind(common,rr);k<-k+1L
+   }
+   if(do_permanova && is.finite(delta)) {
+    pv<-micro_permanova(response_mat,d,o,covariates)
+    pr[[kk]]<-cbind(data.frame(analysis_id=analysis_id,exposure=o,model=model,method=method,pseudocount=delta),pv);kk<-kk+1L
+   }
+  }
+ }
+ list(taxa=bind_rows(rows),permanova=bind_rows(pr),filtering=bind_rows(aa),eligibility=bind_rows(man),status=bind_rows(status_rows))
+}
+micro_permanova <- function(cm,d,exposure,covariates=character()) {
+ n<-nrow(cm);b<-data.frame(n=n,n_genera=ncol(cm),r2=NA_real_,pseudo_f=NA_real_,p=NA_real_,
+  n_parameters=NA_integer_,n_permutations=N_PERMUTATIONS,status="not estimated")
+ if(n<PERMANOVA_MIN_N){b$status<-"n below PERMANOVA minimum";return(b)}
+ if(length(unique(d[[exposure]]))<2){b$status<-"constant exposure";return(b)}
+ dat<-data.frame(x_z=as.numeric(scale(d[[exposure]])));terms<-"x_z"
+ for(v in covariates)if(length(unique(d[[v]]))>1){
+  nm<-paste0("cov_",v);dat[[nm]]<-if(is.numeric(d[[v]]))as.numeric(scale(d[[v]]))else factor(d[[v]]);terms<-c(terms,nm)
+ }
+ mm<-model.matrix(as.formula(paste("~",paste(terms,collapse="+"))),dat)
+ b$n_parameters<-ncol(mm)
+ if(n<max(PERMANOVA_MIN_N,4L*ncol(mm))||qr(mm)$rank<ncol(mm)){
+  b$status<-"insufficient sample per parameter or singular design";return(b)
+ }
+ dst<-dist(cm);ff<-as.formula(paste("dst ~",paste(terms,collapse=" + ")))
+ pv<-tryCatch(with_seed(seed_key(c(exposure,paste(d$family_id,collapse="|"))),function()
+  vegan::adonis2(ff,data=dat,permutations=N_PERMUTATIONS,by="margin")),error=function(e)e)
+ if(inherits(pv,"error")){b$status<-paste("PERMANOVA error",conditionMessage(pv));return(b)}
+ if(!"x_z"%in%rownames(pv)){b$status<-"exposure term not found";return(b)}
+ b$r2<-pv["x_z","R2"];b$pseudo_f<-pv["x_z","F"];b$p<-pv["x_z","Pr(>F)"];b$status<-"estimated";b
+}
+combine_micro <- function(parts) {
+ getpart<-function(nm)bind_rows(lapply(parts,function(x)x[[nm]]))
+ ans<-list(taxa=getpart("taxa"),permanova=getpart("permanova"),filtering=getpart("filtering"),
+  eligibility=getpart("eligibility"),status=getpart("status"))
+ if(nrow(ans$taxa)) {
+  ans$taxa<-ans$taxa %>% group_by(model,method,analysis_id,exposure) %>%
+   mutate(q_family=bh_full(p),hc3_q_family=bh_full(hc3_p),n_hypotheses_family=n()) %>% ungroup() %>%
+   group_by(model,method) %>% mutate(q_module=bh_full(p),hc3_q_module=bh_full(hc3_p),n_hypotheses_module=n()) %>% ungroup()
+ }
+ if(nrow(ans$permanova))ans$permanova<-ans$permanova %>% group_by(model,method) %>%
+  mutate(q_module=bh_full(p),n_hypotheses_module=n()) %>% ungroup()
+ ans
+}
+sensitivity_micro <- function(tab) {
+ if(!nrow(tab))return(data.frame())
+ dd<-tab[tab$model=="unadjusted"&grepl("^CLR_zero_",tab$method),,drop=FALSE]
+ dd %>% group_by(analysis_id,exposure,feature) %>% summarise(n=n[1],
+  n_pseudocounts=sum(is.finite(rho)),rho_min=if(any(is.finite(rho)))min(rho,na.rm=TRUE)else NA_real_,
+  rho_max=if(any(is.finite(rho)))max(rho,na.rm=TRUE)else NA_real_,
+  sign_consistent=if(all(is.finite(rho)))length(unique(sign(rho)))==1L else NA,
+  all_q_module_below_005=if(all(is.finite(q_module)))all(q_module<.05)else NA,
+  .groups="drop")
+}
+run_alpha <- function(micro,source,outcomes,analysis_id) {
+ d<-source %>% inner_join(micro$meta %>% select(family_id,observed,shannon,simpson),by="family_id")
+ rows<-list();i<-1L
+ for(o in intersect(outcomes,names(d)))for(v in c("observed","shannon","simpson")) {
+  s<-safe_spear(d[[o]],d[[v]],B=BOOTSTRAP_REPLICATES,seed=seed_key(c(analysis_id,o,v)))
+  rows[[i]]<-cbind(data.frame(analysis_id=analysis_id,exposure=o,feature=v,
+   effect_type="Spearman rho; diversity from unfiltered non-pseudocounted genus counts"),s);i<-i+1L
+ }
+ bind_rows(rows)
+}
+alpha_fdr <- function(tab) {
+ if(!nrow(tab))return(tab)
+ tab %>% group_by(analysis_id) %>% mutate(q_family=bh_full(p)) %>% ungroup() %>% mutate(q_module=bh_full(p))
+}
+export_micro <- function(ans,alpha=data.frame(),prefix="microbiota") {
+ sens<-sensitivity_micro(ans$taxa)
+ save_csv(ans$taxa,paste0(prefix,"_ALL_taxon_effects_p_q"))
+ save_csv(ans$permanova,paste0(prefix,"_PERMANOVA_effects_p_q"))
+ save_csv(ans$filtering,paste0(prefix,"_ALL_subset_filtering"))
+ save_csv(ans$eligibility,paste0(prefix,"_eligible_samples"))
+ save_csv(ans$status,paste0(prefix,"_analysis_status"))
+ save_csv(alpha,paste0(prefix,"_alpha_diversity_effects_p_q"))
+ save_csv(sens,paste0(prefix,"_pseudocount_sensitivity"))
+ save_xlsx(list(Taxon_effects=ans$taxa,PERMANOVA=ans$permanova,Subset_filtering=ans$filtering,
+  Eligible_samples=ans$eligibility,Analysis_status=ans$status,Alpha=alpha,Pseudocount_sensitivity=sens))
+}
+plot_micro <- function(tab,name,title,top=24L) {
+ if(!nrow(tab))return(invisible(NULL))
+ dd<-tab[tab$is_primary & is.finite(tab$rho) & is.finite(tab$p),,drop=FALSE]
+ if(!nrow(dd))return(invisible(NULL))
+ dd<-head(dd[order(dd$p),,drop=FALSE],top)
+ dd$label<-paste(dd$analysis_id,dd$exposure,sub("^g_","",dd$feature),sep=" | ")
+ dd$label<-factor(dd$label,levels=rev(unique(dd$label)))
+ dd$annotation<-sprintf("rho=%.2f; n=%d; p=%.3g; q=%.3g; detected %d/%d",
+  dd$rho,dd$n,dd$p,dd$q_module,dd$n_raw_positive,dd$n)
+ p<-ggplot(dd,aes(rho,label))+geom_vline(xintercept=0,linetype=2)+
+  geom_segment(aes(x=ci_low,xend=ci_high,yend=label),na.rm=TRUE)+geom_point(size=2.6)+
+  geom_text(aes(label=annotation),x=1.08,hjust=0,size=2.8)+
+  coord_cartesian(xlim=c(-1,3.5),clip="off")+
+  labs(title=title,subtitle="Eligible-subset filter before zero replacement; primary replacement 1e-6",
+   x="Spearman rho with percentile-bootstrap 95% CI",y=NULL,
+   caption="q is BH across all eligible genus/outcome/timepoint tests within this module's primary method.\nTop rows are for display only; full results, exclusions and sensitivity analyses are exported. No measured gene activity.")
+ save_figure(p,name,width=18,height=max(6,.4*nrow(dd)+2.5))
+}
+# Compatibility helper for NON-genus correlations only. Never pass a globally CLR-transformed matrix.
+run_micro_correlations <- function(data,outcomes,features,topic,min_n=6) {
+ rows<-list();i<-1L
+ for(o in intersect(outcomes,names(data)))for(f in intersect(features,names(data))) {
+  rr<-safe_spear(data[[f]],data[[o]],min_n=min_n)
+  rows[[i]]<-cbind(data.frame(topic=topic,exposure=o,feature=f),rr);i<-i+1L
+ }
+ d<-bind_rows(rows)
+ if(nrow(d))d<-d %>% group_by(topic,exposure) %>% mutate(fdr_per_exposure=bh_full(p)) %>% ungroup() %>% mutate(fdr_all_tests=bh_full(p))
+ d
+}
+
+# Endpoint data with clinical fields matched to the one-month specimen; no duplicate alpha columns.
+micro_source <- function(micro,endpoint,z) {
+ cc<-attach_micro_clinical(micro,z)
+ keep<-unique(c("family_id",intersect(setdiff(names(z$clinical1),"family_id"),names(cc)),"clinical_linkage"))
+ ep<-endpoint[,setdiff(names(endpoint),setdiff(keep,"family_id")),drop=FALSE]
+ ep %>% left_join(cc[,keep,drop=FALSE],by="family_id")
+}
+# Resampling is performed only for a model that passes the ORIGINAL design gate.
+# Freeze the original exposure centre/SD: LOFO estimates are on the same effect scale.
+resample_model <- function(d,x,y,covariates=c("month","pregestational_bmi"),transform="log1p",
+ B=BOOTSTRAP_REPLICATES,standardize=TRUE) {
+ cc<-model_complete(d,x,y,covariates)$data
+ fit<-fit_single(cc,x,y,covariates,transform=transform,standardize=standardize)
+ row<-cbind(data.frame(exposure=x,outcome=y),fit)
+ row$bootstrap_ci_low<-row$bootstrap_ci_high<-NA_real_;row$bootstrap_valid<-0L
+ row$lofo_min_beta<-row$lofo_max_beta<-NA_real_;row$lofo_sign_consistent<-NA
+ detail<-list()
+ if(fit$status!="estimated")return(list(summary=row,lofo=data.frame()))
+ center<-fit$exposure_center;scale_x<-fit$exposure_scale
+ for(id in unique(cc$family_id)) {
+  dd<-cc[cc$family_id!=id,,drop=FALSE]
+  f<-fit_single(dd,x,y,covariates,transform=transform,x_center=center,x_scale=scale_x,
+    min_n=5,min_per_parameter=0)
+  detail[[length(detail)+1L]]<-cbind(data.frame(exposure=x,outcome=y,excluded_family=id),f)
+ }
+ loo<-bind_rows(detail);valid<-loo$beta[is.finite(loo$beta)]
+ if(length(valid)) {row$lofo_min_beta<-min(valid);row$lofo_max_beta<-max(valid)
+  row$lofo_sign_consistent<-all(sign(valid)==sign(fit$beta))}
+ # Duplicate resampled rows are intentional bootstrap weights, not extra subjects.
+ bs<-with_seed(seed_key(c(MODULE_NAME,x,y,"bootstrap")),function()replicate(B,{
+  ii<-sample.int(nrow(cc),nrow(cc),replace=TRUE)
+  fit_single(cc[ii,,drop=FALSE],x,y,covariates,transform=transform,x_center=center,x_scale=scale_x,
+   min_n=5,min_per_parameter=0,allow_repeated=TRUE)$beta
+ }))
+ bs<-bs[is.finite(bs)];row$bootstrap_valid<-length(bs)
+ if(length(bs)>=max(100L,ceiling(.8*B))) {
+  ci<-quantile(bs,c(.025,.975),names=FALSE);row$bootstrap_ci_low<-ci[1];row$bootstrap_ci_high<-ci[2]
+ }
+ list(summary=row,lofo=loo)
+}
+# Independent-group effect: probability group B exceeds group A minus reverse probability.
+# Also report a location difference; these are not within-subject changes.
+group_effect <- function(a,b,B=BOOTSTRAP_REPLICATES,min_group=4,seed=20261027L) {
+ a<-a[is.finite(a)];b<-b[is.finite(b)]
+ out<-data.frame(n_A=length(a),n_B=length(b),median_A=if(length(a))median(a)else NA_real_,
+  median_B=if(length(b))median(b)else NA_real_,median_difference_B_minus_A=NA_real_,
+  median_difference_ci_low=NA_real_,median_difference_ci_high=NA_real_,
+  rank_biserial=NA_real_,rank_biserial_ci_low=NA_real_,rank_biserial_ci_high=NA_real_,
+  p=NA_real_,status="insufficient group size")
+ if(length(a)<min_group||length(b)<min_group)return(out)
+ delta<-function(x,y)mean(sign(outer(y,x,"-")))
+ out$median_difference_B_minus_A<-median(b)-median(a);out$rank_biserial<-delta(a,b)
+ if(length(unique(c(a,b)))<2){out$status<-"constant outcome";return(out)}
+ out$p<-suppressWarnings(wilcox.test(a,b,exact=FALSE)$p.value);out$status<-"estimated"
+ if(B>0){bs<-with_seed(seed,function()replicate(B,{
+  aa<-sample(a,length(a),replace=TRUE);bb<-sample(b,length(b),replace=TRUE)
+  c(median(bb)-median(aa),delta(aa,bb))}))
+  ci1<-quantile(bs[1,],c(.025,.975),names=FALSE);ci2<-quantile(bs[2,],c(.025,.975),names=FALSE)
+  out$median_difference_ci_low<-ci1[1];out$median_difference_ci_high<-ci1[2]
+  out$rank_biserial_ci_low<-ci2[1];out$rank_biserial_ci_high<-ci2[2]
+ }
+ out
+}
+
+# Complete explicit column mapping (legacy module09 labels do not match source prefixes).
+make_triad_evidence <- function(d) {
+ if(!is.data.frame(d)||!nrow(d))return(data.frame(path=character(),link=character(),rho=numeric(),p=numeric(),q=numeric(),n=integer()))
+ prefixes<-c(diet_milk="diet_to_milk",milk_urine="milk_to_urine",diet_urine="diet_to_urine")
+ bind_rows(lapply(names(prefixes),function(edge){pr<-prefixes[[edge]]
+  cols<-c(paste0(pr,"_rho"),paste0(pr,"_p"),paste0("q_",edge))
+  if(!all(cols%in%names(d)))stop("Missing triad columns: ",paste(setdiff(cols,names(d)),collapse=", "))
+  data.frame(path=paste(d$diet,d$arsenic_species,sep=" | "),link=rep(edge,nrow(d)),
+   rho=d[[cols[1]]],p=d[[cols[2]]],q=d[[cols[3]]],n=d$n_same_triple)
+ }))
+}
+
+plot_alpha_effects <- function(alpha,name,title,top=24L) {
+ if(!nrow(alpha))return(invisible(NULL))
+ dd<-alpha[is.finite(alpha$rho)&is.finite(alpha$p),,drop=FALSE]
+ if(!nrow(dd))return(invisible(NULL))
+ dd<-head(dd[order(dd$p),,drop=FALSE],top)
+ dd$label<-paste(dd$analysis_id,dd$exposure,dd$feature,sep=" | ")
+ dd$label<-factor(dd$label,levels=rev(unique(dd$label)))
+ dd$note<-sprintf("rho=%.2f; n=%d; p=%.3g; q=%.3g",dd$rho,dd$n,dd$p,dd$q_module)
+ pp<-ggplot(dd,aes(rho,label))+geom_vline(xintercept=0,linetype=2)+
+  geom_segment(aes(x=rho_ci_low,xend=rho_ci_high,yend=label),na.rm=TRUE)+geom_point()+
+  geom_text(aes(label=note),x=1.05,hjust=0,size=2.8)+coord_cartesian(xlim=c(-1,3),clip="off")+
+  labs(title=title,x="Spearman rho with percentile-bootstrap 95% CI",y=NULL,
+   caption="Diversity uses unfiltered, non-pseudocounted genus counts; observed is genus richness, not ASV richness.\nq covers all diversity-outcome/linkage tests in this module; displayed rows do not define the FDR family.")
+ save_figure(pp,name,width=17,height=max(6,.4*nrow(dd)+2.5))
+}
+plot_eligible_ordination <- function(micro,source,exposure,analysis_id,ans,name,title) {
+ d<-source[source$family_id%in%micro$meta$family_id & is.finite(source[[exposure]]),,drop=FALSE]
+ ss<-subset_micro(micro,d$family_id,paste0(analysis_id,"_ordination"))
+ if(ss$status!="eligible"||length(ss$retained_taxa)<3L)return(invisible(NULL))
+ cm<-zero_clr(ss$filtered_ra,PRIMARY_ZERO_REPLACEMENT)
+ ord<-tryCatch(cmdscale(dist(cm),k=2,eig=TRUE),error=function(e)NULL)
+ if(is.null(ord)||ncol(ord$points)<2||sum(ord$eig>1e-10)<2)return(invisible(NULL))
+ pct<-100*pmax(ord$eig[1:2],0)/sum(pmax(ord$eig,0))
+ pd<-data.frame(PCoA1=ord$points[,1],PCoA2=ord$points[,2],exposure_value=d[[exposure]])
+ tt<-ans$permanova
+ tt<-tt[tt$analysis_id==analysis_id & tt$exposure==exposure & tt$model=="unadjusted" & tt$pseudocount==PRIMARY_ZERO_REPLACEMENT,,drop=FALSE]
+ note<-if(nrow(tt))sprintf("n=%d; genera=%d; PERMANOVA R2=%.3f; p=%.3g; q=%.3g",nrow(d),ncol(cm),tt$r2[1],tt$p[1],tt$q_module[1])else paste("n=",nrow(d),"; no estimable community test")
+ pp<-ggplot(pd,aes(PCoA1,PCoA2,color=exposure_value))+geom_point(size=3)+
+  labs(title=title,subtitle=note,x=sprintf("Aitchison PCoA1 (%.1f%%)",pct[1]),y=sprintf("Aitchison PCoA2 (%.1f%%)",pct[2]),color=exposure,
+   caption="This is microbial-composition ordination, NOT dietary PCA. Endpoint-specific filtering and primary zero replacement.\nColours are observed arsenic values in unverified source units; no causal interpretation.")
+ save_figure(pp,name,width=11,height=7)
+}
+
+```
+
+# Analysis, checks, figures and exports
+
+```{r run-all-from-scratch, echo=FALSE, message=TRUE, warning=TRUE}
+z<-join_diet(prep_data())
+plan<-data.frame(matrix=c("milk","milk","milk","milk","urine","urine","urine","urine","urine"),
+ food=c("shellfish_mollusc_total","squid","wine_total","beer","dairy_total","semi_skimmed_milk","beer","wine_total","shellfish_mollusc_total"),
+ outcome=c("ias","ias","dma","ias","asb","asb","ias","pct_mma","ias"))
+rows<-list();loos<-list();binary_rows<-list();consumer_only<-list();raw_rows<-list()
+for(j in seq_len(nrow(plan))) {
+ site_key<-plan$matrix[j];d<-if(site_key=="milk")z$milkdata else z$urinedata
+ food<-plan$food[j];x<-paste0("d2000_",food);y<-plan$outcome[j]
+ tr<-if(grepl("^pct_",y))"identity"else"log1p"
+ rs<-resample_model(d,x,y,transform=tr)
+ prev<-food_prevalence(d,x,y,food)
+ rows[[j]]<-cbind(data.frame(analysis=j,matrix=site_key,food=food),rs$summary,prev)
+ if(nrow(rs$lofo))loos[[j]]<-cbind(data.frame(analysis=j,matrix=site_key,food=food),rs$lofo)
+ cc<-model_complete(d,x,y,c("month","pregestational_bmi"))$data
+ cc$food_consumed<-as.numeric(cc[[food]]>0)
+ bf<-fit_single(cc,"food_consumed",y,c("month","pregestational_bmi"),transform=tr,standardize=FALSE)
+ if(sum(cc$food_consumed==1,na.rm=TRUE)<5||sum(cc$food_consumed==0,na.rm=TRUE)<5) {
+  bf$beta<-bf$ci_low<-bf$ci_high<-bf$p<-bf$hc3_p<-bf$hc3_ci_low<-bf$hc3_ci_high<-NA_real_
+  bf$status<-"fewer than five consumers or nonconsumers"
+ }
+ binary_rows[[j]]<-cbind(data.frame(analysis=j,matrix=site_key,food=food,outcome=y,
+   effect_type="Consumer (1) minus nonconsumer (0); NOT per SD of binary exposure"),bf)
+ ii<-is.finite(cc[[food]])&cc[[food]]>0
+ ss<-safe_spear(cc[[food]][ii],cc[[y]][ii],B=BOOTSTRAP_REPLICATES,seed=seed_key(c(site_key,x,y)))
+ consumer_only[[j]]<-cbind(data.frame(analysis=j,matrix=site_key,food=food,outcome=y),ss)
+ raw_rows[[j]]<-data.frame(analysis=rep(j,nrow(cc)),matrix=rep(site_key,nrow(cc)),food=rep(food,nrow(cc)),
+  family_id=cc$family_id,consumption=cc[[food]],outcome=cc[[y]])
+}
+models<-bind_rows(rows);models$q_all<-bh_full(models$p);models$hc3_q_all<-bh_full(models$hc3_p)
+binary<-bind_rows(binary_rows);binary$q_all<-bh_full(binary$p);binary$hc3_q_all<-bh_full(binary$hc3_p)
+consumers<-bind_rows(consumer_only);consumers$q_all<-bh_full(consumers$p)
+loo<-bind_rows(loos)
+save_csv(models,"selected_hypotheses_prevalence_effects_CI_p_q");save_csv(binary,"binary_consumption_effects")
+save_csv(consumers,"consumer_only_correlations");save_csv(loo,"LOFO_fixed_original_SD")
+save_csv(bind_rows(raw_rows),"sparse_exposure_complete_case_data")
+save_xlsx(list(Continuous_models=models,Binary_contrasts=binary,Consumers_only=consumers,
+ LOFO=loo,Data=bind_rows(raw_rows),Plan=plan))
+plot_coefficients(models,"F12_sparse_food_effects","Reviewer-motivated sparse-exposure sensitivity; third-trimester diet",top=20)
+if(nrow(loo)){
+ pp<-ggplot(loo,aes(beta,factor(analysis)))+geom_point(alpha=.55,position=position_jitter(height=.08))+
+  geom_vline(xintercept=0,linetype=2)+labs(title="Leave-one-family-out slope stability",x="Beta on the FIXED original exposure-SD scale",y="Analysis ID (see plan)",
+   caption="All families omitted in turn. No observation is removed from the principal model because of its influence.")
+ save_figure(pp,"F12_LOFO_fixed_scale",width=11,height=7)
+}
+knitr::kable(models,digits=3,caption="Each model includes the same analytic denominator for prevalence and its effect estimates")
+
+```
+
+# Successful-run receipt and inventory
+
+```{r completed-run, echo=FALSE}
+finish_module()
+```
+
+# Interpretation boundaries
+
+Maternal dietary variables refer to the **third trimester of gestation**, irrespective of the legacy `_48h` worksheet names. Both faecal microbiota tables refer to **one month postpartum**. Human-milk and infant-urine arsenic retain the workbook’s nominal 1- and 2-month labels; exact days are unavailable. These observational associations do not establish mediation, microbial arsenic metabolism or strain transmission.
+
+The microbiota rule is **relative abundance at least 0.01 (1%) in at least 50% of the eligible specimens**. Eligibility, including nonzero arsenic-ratio denominators and covariate completeness, precedes filtering. Only microbial zeros are replaced (primary 1e-6; sensitivities 1e-7 and 1e-5), followed by reclosure and CLR. Chemical arsenic zeros are never pseudocounted. Each CLR result refers to its retained subcomposition; no all-zero genus may become a discovery through CLR centring. All excluded taxa, tested families and sample counts are exported.
+
+Urinary concentrations are not dilution-corrected. Ratio denominators can be small and analytical LOD/LOQ and concentration units are unverified. Genus-level 16S does not measure genes. Reference-genome evidence is not participant-specific gene carriage. Duration-derived feeding describes any breastfeeding, not exclusive breastfeeding. Antibiotic recipient/timing needs confirmation and is not in default adjustment. No automatic deletion of influential samples or p-value-driven covariate selection is performed. Dietary PCA is not part of this source release. See README.md for the retained methods and interpretation.
+
+**Validation boundary:** setup includes a saved-code syntax preflight using your local R; there is no companion test script. Packaging and code-preservation checks were performed, but these revisions have not been fully knitted in the authoring environment. Inspect run receipts, model statuses and diagnostics after execution; skipped models are not null results.

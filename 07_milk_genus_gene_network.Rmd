@@ -1,0 +1,2111 @@
+---
+title: "Milk arsenic–faecal genera and human-gut reference gene candidates"
+subtitle: "MAMI | Full UHGG catalogue, no numerical caps | Audited taxonomy | Separate maternal and infant networks"
+editor_options:
+  chunk_output_type: console
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    df_print: paged
+---
+
+# Start here: set your local paths, save, then Knit
+
+Only `INPUT_FILE` needs changing when the workbook is not beside this Rmd.
+Use the **same `OUTPUT_ROOT` in every module**. The Rmd itself may be stored anywhere.
+No `.Rproj`, helper `.R` file, configuration file or previous analysis is required.
+Module 14 only reads other modules' completed outputs for its optional review.
+
+```{r user-settings, include=FALSE}
+# A workbook beside this Rmd works with this default. Otherwise enter its full path.
+# Windows example: INPUT_FILE <- "C:/my-study/ALL_DATA_clean_for_analysis.xlsx"
+INPUT_FILE <- "ALL_DATA_clean_for_analysis.xlsx"
+
+# Automatic results folders are created here; keep this outside the public GitHub folder.
+OUTPUT_ROOT <- if (.Platform$OS.type=="windows") "C:/MAMI_results_simple" else "~/MAMI_results_simple"
+AUTO_INSTALL_PACKAGES <- TRUE  # Install missing R packages from CRAN; internet required.
+
+# Only module 07 needs BLAST+. Use your installation, or "" to search PATH.
+BLASTP <- "C:/Program Files/NCBI/blast-2.17.0+/bin/blastp.exe"
+RUN_BLAST <- TRUE  # FALSE is an explicitly annotation-only analysis, not a sequence search.
+```
+
+# Scope
+
+This module asks: **among faecal genera associated with arsenic in human milk,
+which have human-gut reference representatives with candidate arsenic-related genes?**
+Maternal and infant faecal samples are from **one month postpartum** and are
+analysed separately. The default matches them to **one-month human milk**.
+There are **no PC1, dietary PCA, urine or mediation analyses** in this module.
+
+The network is an **evidence map, not a causal or microbial co-occurrence network**:
+`measured milk arsenic — measured faecal genus | human-gut reference genome — candidate gene`.
+A taxonomic bridge does not establish that the reference species or gene was
+present in a participant. The association with one arsenic species does not
+establish that a candidate gene transforms that arsenic species.
+
+## Full-catalogue search, not a 48-genome snapshot
+
+The versioned **UHGG v2.0.2 catalogue** is loaded from its full metadata. The default
+annotation and BLAST scopes request **every species representative in that catalogue**
+(4,744 in the metadata supplied with the earlier run), with no top-48, top-75 or
+per-genus cap. This covers species representatives, **not all 289,232 constituent
+genomes/strains and not every human-gut database in existence**. Source genomes,
+completed downloads, failed files and missing sequence-query markers are counted
+separately. A failed/missing file is never called gene absence.
+
+**This is a large local reference search.** It downloads thousands of annotation and
+protein files and can use several gigabytes of disk. Keep the machine online with
+adequate storage. Validated downloads, parsed annotation checkpoints and successful
+BLAST searches are reused after interruption. The run never stops after finding the
+first positive genome. Scope can explicitly be reduced to `"mapped_representatives"`
+for all representatives of the selected study genera; that run is labelled narrower.
+
+Taxonomic matching ignores case, extra spaces, underscores, hyphens and harmless
+brackets, while retaining meaningful letters and numbers. `Bacteroides_A` is **not**
+collapsed to `Bacteroides`; `Christensenellaceae R-7 group` is **not** treated as
+`Christensenella`. Documented synonyms can be added in an optional reviewed crosswalk.
+Unresolved names receive a suggestion/audit table; suggestions never create network
+edges without approval and supporting source information.
+
+The reviewed protein-query panel is the existing 90-sequence UniProt snapshot dated
+27 October 2026. It is embedded as short plain-text lines, **not compressed content or
+a giant URL vector**. The catalogue expands; this does not pretend that the UniProt
+query panel was refreshed. Markers lacking a reviewed query are explicitly unassessed
+by homology. BLAST thresholds, the 18-marker panel, cohort tests and FDR are not relaxed.
+
+**Figures:** separate maternal/infant networks and forest plots retain effect sizes,
+intervals, n, p and full-family q. Only statistically selected links with a gene
+candidate on a mapped human-gut representative are displayed. All other results and
+mapping uncertainties remain in the tables. Large networks are **paginated without
+omitting eligible species or genes**. Editable SVG is written directly; vector PDF
+and 600-dpi PNG use explicit file devices, never RStudio's plot pane.
+
+**Default follow-up is nominal p < 0.05**, clearly exploratory, not FDR significance.
+`FOLLOWUP_RULE <- "FDR"` requires q(all milk) < 0.05. External evidence cannot upgrade
+a nominal cohort association. Full-catalogue failures label the report **partial**;
+check the reference coverage summary before using it as an exhaustive screen.
+
+# Settings and safety checks
+
+```{r settings, include=FALSE}
+knitr::opts_chunk$set(
+  echo=FALSE, error=FALSE, cache=FALSE, warning=TRUE, message=TRUE,
+  dev="pdf", fig.keep="none"
+)
+MODULE07_RELEASE <- "M07_simple_full_catalogue_1.1.0"
+# Figures are exported explicitly. Nothing is printed to the RStudio plot pane.
+MAX_PNG_PIXELS <- 65000000
+INSTALL_OPTIONAL_RAGG <- TRUE
+EXPORT_ALL_TEST_FORESTS <- FALSE # All tests are always exported as CSV/Excel.
+
+options(stringsAsFactors=FALSE,scipen=999)
+MILK_MONTH <- 1L
+MIN_RA <- 0.01                   # 1%, NOT 0.01%
+MIN_PREVALENCE <- 0.50
+ZERO_REPLACEMENTS <- c(1e-6,1e-7,1e-5)
+PRIMARY_ZERO <- 1e-6
+MIN_N <- 6L
+BOOTSTRAP_N <- 999L
+FOLLOWUP_RULE <- "nominal"       # "nominal" = p<0.05; "FDR" = q_all_milk<0.05
+# RUN_BLAST is set in the first user-settings chunk.
+# No top-N or per-genus cap. Both default searches cover ALL catalogue representatives.
+ANNOTATION_SCOPE <- "all_representatives"
+BLAST_SCOPE <- "all_representatives"
+# "mapped_representatives" is an explicitly narrower option, never an automatic fallback.
+OFFLINE_REFERENCES <- FALSE
+DOWNLOAD_ATTEMPTS <- 3L
+BLAST_THREADS <- 2L
+TAXONOMY_CROSSWALK_FILE <- "" # Optional approved crosswalk; not needed for the default run.
+LEGACY_REFERENCE_CACHE <- ""   # Optional old PUBLIC-reference cache folder.
+LOCAL_UHGG_METADATA <- ""      # Optional local UHGG v2.0.2 metadata TSV.
+# Formatting-only normalization is automatic; fuzzy/group-level guesses are NOT accepted.
+PLOT_DPI <- 600L
+# Respect the first-chunk path, with PATH as the fallback when it is absent.
+if (length(BLASTP)!=1L || is.na(BLASTP)) stop("BLASTP must be one executable path or an empty string.")
+if (!nzchar(BLASTP) || !file.exists(path.expand(BLASTP))) BLASTP <- unname(Sys.which("blastp"))
+if (nzchar(BLASTP) && file.exists(path.expand(BLASTP)))
+  BLASTP <- normalizePath(path.expand(BLASTP),winslash="/",mustWork=TRUE)
+# Direct local paths. No project root, configuration file or companion script.
+ACTIVE_RMD <- tryCatch(knitr::current_input(dir=TRUE), error=function(e) "")
+if (!length(ACTIVE_RMD) || !nzchar(ACTIVE_RMD[1])) {
+  ACTIVE_RMD <- if (requireNamespace("rstudioapi", quietly=TRUE))
+    tryCatch(rstudioapi::getSourceEditorContext()$path, error=function(e) "") else ""
+}
+ACTIVE_DIR <- if (length(ACTIVE_RMD)==1L && nzchar(ACTIVE_RMD) && file.exists(ACTIVE_RMD))
+  dirname(normalizePath(ACTIVE_RMD, winslash="/")) else getwd()
+mami_absolute <- function(path, base=ACTIVE_DIR) {
+  if (length(path)!=1L || is.na(path) || !nzchar(trimws(path)))
+    stop("Set a nonempty path in the user-settings chunk at the top of this Rmd.")
+  path <- path.expand(path)
+  if (!grepl("^([A-Za-z]:[/\\\\]|/|\\\\\\\\)", path)) path <- file.path(base,path)
+  normalizePath(path, winslash="/", mustWork=FALSE)
+}
+INPUT_FILE <- mami_absolute(INPUT_FILE)
+if (!file.exists(INPUT_FILE) || dir.exists(INPUT_FILE)) {
+  stop("Input workbook not found: ",INPUT_FILE,
+    ". Edit INPUT_FILE in the first chunk. Use the workbook itself, not its folder.",call.=FALSE)
+}
+if (!grepl("\\.xlsx$", INPUT_FILE, ignore.case=TRUE))
+  stop("INPUT_FILE must be an .xlsx workbook with the six sheets listed in README.md.")
+INPUT_FILE <- normalizePath(INPUT_FILE, winslash="/", mustWork=TRUE)
+OUTPUT_ROOT <- mami_absolute(OUTPUT_ROOT)
+if (.Platform$OS.type=="windows" && nchar(OUTPUT_ROOT,type="bytes")>100L)
+  stop("Choose a short OUTPUT_ROOT in the first chunk, for example C:/MAMI_results_simple.")
+dir.create(OUTPUT_ROOT, recursive=TRUE, showWarnings=FALSE)
+if (!dir.exists(OUTPUT_ROOT)) stop("Cannot create OUTPUT_ROOT: ",OUTPUT_ROOT)
+probe <- file.path(OUTPUT_ROOT,paste0(".write_test_",Sys.getpid()))
+can_write <- tryCatch({writeLines("test",probe);unlink(probe);TRUE},error=function(e)FALSE)
+if (!can_write) stop("OUTPUT_ROOT is not writable. Choose a local folder you can write to.")
+message("Input workbook: ", INPUT_FILE)
+message("Results root: ", OUTPUT_ROOT)
+PIPELINE_VERSION <- "MAMI_simple_standalone_1.1.0"
+
+ACTIVE_FILE <- ACTIVE_RMD
+ROOT <- file.path(OUTPUT_ROOT,"07_milk_genus_gene_network")
+REFERENCE_CACHE <- file.path(ROOT,"cache")
+BLAST_WORK <- file.path(ROOT,"blast_work")
+if(nzchar(TAXONOMY_CROSSWALK_FILE)) TAXONOMY_CROSSWALK_FILE <- mami_absolute(TAXONOMY_CROSSWALK_FILE)
+for(d in c(REFERENCE_CACHE,BLAST_WORK)) dir.create(d,recursive=TRUE,showWarnings=FALSE)
+if (.Platform$OS.type=="windows" && nchar(BLAST_WORK,type="bytes")>130L)
+  stop("Choose a shorter OUTPUT_ROOT in the first chunk.")
+INPUT_MD5 <- unname(tools::md5sum(INPUT_FILE))
+ANALYSIS_SIGNATURE <- paste(PIPELINE_VERSION,INPUT_MD5,MIN_RA,MIN_PREVALENCE,
+ paste(ZERO_REPLACEMENTS,collapse=","),PRIMARY_ZERO,MIN_N,8L,1999L,BOOTSTRAP_N,sep="|")
+dir.create(OUTPUT_ROOT,recursive=TRUE,showWarnings=FALSE)
+signature_file <- file.path(OUTPUT_ROOT,"ANALYSIS_SIGNATURE.txt")
+if(file.exists(signature_file)) {
+ old <- readLines(signature_file,warn=FALSE)
+ if(!length(old)||!identical(old[1],ANALYSIS_SIGNATURE))
+  stop("Output folder belongs to another workbook/settings profile. Choose a NEW OUTPUT_ROOT in the first chunk.")
+} else writeLines(ANALYSIS_SIGNATURE,signature_file)
+for(sub in c("","tables","figures","logs","cache","blast_work")) {
+  p <- file.path(ROOT,sub)
+  dir.create(p,recursive=TRUE,showWarnings=FALSE)
+  if(!dir.exists(p)) stop("Cannot create output folder: ",p)
+  probe <- file.path(p,".write_test")
+  ok <- tryCatch({writeLines("ok",probe);unlink(probe);TRUE},error=function(e)FALSE)
+  if(!ok) stop("Output folder is not writable: ",p,
+    ". Set OUTPUT_ROOT in the first chunk to a short local writable directory.")
+}
+ROOT <- normalizePath(ROOT,winslash="/",mustWork=TRUE)
+receipt <- file.path(ROOT,"logs","RUN_COMPLETE.csv")
+if(file.exists(receipt)) unlink(receipt)
+TABLE_DIR <- file.path(ROOT,"tables"); FIG_DIR <- file.path(ROOT,"figures")
+# Remove only this module's prior figure/statistic exports; preserve its public cache.
+# Remove this module's old figure exports, including numbered pages; keep cache.
+old_figures <- list.files(FIG_DIR,pattern="^(N_|F_|S_all_).+\\.(png|pdf|svg)$",full.names=TRUE)
+if(length(old_figures)) unlink(old_figures)
+for(nm in c("GALLERY.html","FIGURE_EXPORT_MANIFEST.csv")) {
+  p <- file.path(ROOT,nm)
+  if(file.exists(p)) unlink(p)
+}
+for(stem in c("13_all_BLAST_alignments","14_BLAST_threshold_passes")) {
+  f<-file.path(TABLE_DIR,paste0(stem,".csv"));if(file.exists(f))unlink(f)
+}
+needed <- c("readxl","openxlsx","knitr","data.table","curl")
+missing <- needed[!vapply(needed,requireNamespace,logical(1),quietly=TRUE)]
+if(length(missing)) {
+ if(!AUTO_INSTALL_PACKAGES) stop("Install the missing packages before knitting: ",paste(missing,collapse=", "))
+ install.packages(missing,repos="https://cloud.r-project.org")
+}
+if(any(!vapply(needed,requireNamespace,logical(1),quietly=TRUE))) stop("Required R packages could not be loaded.")
+# Optional high-quality PNG backend. SVG and PDF do not require this package.
+if(AUTO_INSTALL_PACKAGES && INSTALL_OPTIONAL_RAGG && !requireNamespace("ragg",quietly=TRUE)) {
+  tryCatch(install.packages("ragg",repos="https://cloud.r-project.org"),
+    error=function(e)message("Optional ragg installation failed: ",conditionMessage(e)))
+}
+writeLines(c(
+  paste("Module:",MODULE07_RELEASE),paste("R:",R.version.string),
+  paste("Platform:",R.version$platform),paste("Root:",ROOT),
+  paste("Cairo:",capabilities("cairo")),
+  paste("ragg:",if(requireNamespace("ragg",quietly=TRUE))as.character(utils::packageVersion("ragg"))else "unavailable"),
+  "All drawing opens explicit file devices; no call to RStudioGD or default png()."
+),file.path(ROOT,"logs","GRAPHICS_ENVIRONMENT.txt"))
+stopifnot(MILK_MONTH %in% c(1L,2L),MIN_RA>0,MIN_RA<1,
+          MIN_PREVALENCE>0,MIN_PREVALENCE<=1,FOLLOWUP_RULE %in% c("nominal","FDR"),
+ ANNOTATION_SCOPE %in% c("all_representatives","mapped_representatives"),
+ BLAST_SCOPE %in% c("all_representatives","mapped_representatives"),
+ DOWNLOAD_ATTEMPTS>=1L,BLAST_THREADS>=1L)
+# Check the SAVED file, including its physical console-line lengths.
+if(length(ACTIVE_FILE)==1L && file.exists(ACTIVE_FILE)) {
+  text <- readLines(ACTIVE_FILE,warn=FALSE,encoding="UTF-8")
+  inside <- FALSE; chunk <- character()
+  for(line in text) {
+    if(!inside && grepl("^```\\{r",line)) {inside<-TRUE;chunk<-character()} else if(inside && grepl("^```[[:space:]]*$",line)) {
+      parse(text=chunk); inside<-FALSE
+    } else if(inside) {
+      if(nchar(line,type="bytes")>3000L) stop("An R line exceeds the console-safe length.")
+      chunk <- c(chunk,line)
+    }
+  }
+  if(inside) stop("Unclosed R chunk.")
+}
+```
+
+# Source reading and analysis functions
+
+```{r functions, include=FALSE}
+take_rows <- function(x,i) {
+  if(is.logical(i)) i <- which(!is.na(i) & i)
+  if(!is.numeric(i)) stop("Row selector must be logical or numeric.")
+  # Explicit columns: no empty argument in x[i, , drop=FALSE].
+  x[i,seq_len(ncol(x)),drop=FALSE]
+}
+safe_name <- function(x) {
+  x <- iconv(x,to="ASCII//TRANSLIT",sub="_")
+  x <- gsub("[^a-z0-9]+","_",tolower(x))
+  make.unique(gsub("^_+|_+$","",x),sep="_duplicate_")
+}
+read_sheet <- function(sheet) {
+  d <- readxl::read_excel(INPUT_FILE,sheet=sheet,na=c("","NA","N/A","NaN","NULL"),
+                         .name_repair="minimal")
+  names(d)<-safe_name(names(d));as.data.frame(d,stringsAsFactors=FALSE)
+}
+num <- function(x,label) {
+  raw<-trimws(as.character(x));raw[toupper(raw)%in%c("","NA","N/A","NAN","NULL")]<-NA_character_
+  value<-suppressWarnings(as.numeric(raw))
+  if(any(!is.na(raw)&is.na(value))) stop("Nonnumeric values in ",label,"; not zero-imputed.")
+  value
+}
+std_family <- function(family_code, sample_id = NULL) {
+  z <- toupper(trimws(as.character(family_code)))
+  z[z %in% c("", "NA", "N/A", "NULL", "NAN")] <- NA_character_
+  z <- sub("\\.0$", "", z)
+  is_w <- !is.na(z) & grepl("^W0*[0-9]+$", z)
+  z[is_w] <- paste0("W", as.integer(sub("^W", "", z[is_w])))
+  is_num <- !is.na(z) & grepl("^0*[0-9]+$", z)
+  z[is_num] <- as.character(as.integer(z[is_num]))
+  is_suffix <- !is.na(z) & grepl("^0*[0-9]+[A-Z]+$", z)
+  z[is_suffix] <- paste0(as.integer(sub("^0*([0-9]+)[A-Z]+$", "\\1", z[is_suffix])),
+                         sub("^0*[0-9]+", "", z[is_suffix]))
+  if (!is.null(sample_id)) {
+    s <- toupper(trimws(as.character(sample_id)))
+    # The DB group identifier is NOT a unique mother/infant identifier.
+    db <- !is.na(s) & grepl("^SDB[0-9]+[A-Z]+[0-9]{2}H$", s)
+    z[db] <- sub("^S(DB[0-9]+[A-Z]+)[0-9]{2}H$", "\\1", s[db])
+    m <- !is.na(s) & grepl("^S[0-9]{3}M[0-9]", s)
+    z[m] <- as.character(as.integer(sub("^S0*([0-9]+)M.*", "\\1", s[m])))
+    # W sample ID is only a fallback when explicit W code is missing.
+    w <- !is.na(s) & grepl("^S[0-9]{3}WM", s) & is.na(z)
+    if (any(w)) z[w] <- paste0("W", as.integer(sub("^S0*([0-9]+)WM.*", "\\1", s[w])))
+  }
+  z
+}
+
+write_csv <- function(d,name) {
+  if(!ncol(d))d<-data.frame(status=character())
+  write.csv(d,file.path(TABLE_DIR,paste0(name,".csv")),row.names=FALSE,na="")
+}
+bind_rows_safe <- function(x,template=data.frame()) {
+  x<-Filter(function(z)is.data.frame(z)&&nrow(z)>0,x)
+  if(length(x)) do.call(rbind,x) else take_rows(template,integer(0))
+}
+bh <- function(p) {
+  out<-rep(NA_real_,length(p));ok<-is.finite(p)
+  if(any(ok))out[ok]<-p.adjust(p[ok],"BH",n=length(p))
+  out
+}
+seed_key <- function(x) as.integer((sum(utf8ToInt(paste(x,collapse="|")))+20261027) %% 2147483647)
+cor_stats <- function(x,y,bootstrap=FALSE,seed=1L) {
+  ans<-data.frame(rho=NA_real_,ci_low=NA_real_,ci_high=NA_real_,p=NA_real_,
+                  bootstrap_valid=0L,status="not estimated")
+  if(length(x)<MIN_N){ans$status<-"too few samples";return(ans)}
+  if(length(unique(x))<2L||length(unique(y))<2L){ans$status<-"constant variable";return(ans)}
+  ct<-suppressWarnings(cor.test(x,y,method="spearman",exact=FALSE))
+  ans$rho<-unname(ct$estimate);ans$p<-ct$p.value;ans$status<-"estimated"
+  if(bootstrap) {
+    set.seed(seed)
+    bs<-replicate(BOOTSTRAP_N,{
+      j<-sample.int(length(x),length(x),replace=TRUE)
+      if(length(unique(x[j]))<2L||length(unique(y[j]))<2L) NA_real_ else
+        suppressWarnings(cor(x[j],y[j],method="spearman"))
+    })
+    bs<-bs[is.finite(bs)];ans$bootstrap_valid<-length(bs)
+    if(length(bs)>=max(100L,ceiling(0.8*BOOTSTRAP_N))) {
+      ci<-quantile(bs,c(.025,.975),names=FALSE);ans$ci_low<-ci[1];ans$ci_high<-ci[2]
+    }
+  }
+  ans
+}
+load_micro <- function(sheet,group) {
+  d<-read_sheet(sheet);d$family_id<-std_family(d$family_code,d$sample_id)
+  taxa<-grep("^g_",names(d),value=TRUE)
+  if(length(taxa)<2L)stop("No genus-count columns in ",sheet)
+  counts<-as.matrix(data.frame(lapply(taxa,function(v)num(d[[v]],paste(sheet,v))),check.names=FALSE))
+  colnames(counts)<-taxa
+  if(any(counts<0,na.rm=TRUE)||any(abs(counts-round(counts))>1e-7,na.rm=TRUE))
+    stop("Expected nonnegative raw integer counts: ",sheet)
+  depth<-rowSums(counts);bad<-rowSums(!is.finite(counts))
+  keep<-bad==0L&is.finite(depth)&depth>0&!is.na(d$family_id)
+  qc<-data.frame(group=group,sample_id=d$sample_id,family_id=d$family_id,
+                 depth=depth,missing_counts=bad,included=keep)
+  if(anyDuplicated(d$family_id[keep]))stop("Duplicate eligible microbiota family IDs: ",sheet)
+  counts<-take_rows(counts,keep);meta<-d[keep,c("family_id","sample_id"),drop=FALSE]
+  ra<-sweep(counts,1,rowSums(counts),"/");rownames(ra)<-meta$family_id
+  list(meta=meta,counts=counts,ra=ra,qc=qc)
+}
+zero_clr <- function(ra,delta) {
+  stopifnot(ncol(ra)>=2L,all(is.finite(ra)),all(ra>=0),all(rowSums(ra)>0))
+  d<-ra;d[d==0]<-delta;d<-sweep(d,1,rowSums(d),"/")
+  log(d)-rowMeans(log(d))
+}
+run_group <- function(micro,milk,group) {
+  effects<-list();audits<-list();eligibility<-list();statuses<-list()
+  outcomes<-c("asb","ias","dma","mma","methylated_as","non_asb_as")
+  for(o in outcomes) {
+    take<-is.finite(milk[[o]])&milk$family_id%in%micro$meta$family_id
+    md<-take_rows(milk,take);idx<-match(md$family_id,micro$meta$family_id)
+    if(anyDuplicated(md$family_id))stop("Do not pool repeated milk measurements per family.")
+    ra<-take_rows(micro$ra,idx);n<-nrow(ra)
+    positive<-if(n)colSums(ra>0) else rep(0L,ncol(ra))
+    above<-if(n)colSums(ra>=MIN_RA) else rep(0L,ncol(ra))
+    ambiguous<-grepl("uncultured|unclassified|unknown",colnames(ra),ignore.case=TRUE)
+    keep<-n>0&above>=ceiling(MIN_PREVALENCE*n)&positive>0&!ambiguous
+    variable<-if(n>1L)apply(ra,2,function(x)length(unique(x))>1L) else rep(FALSE,ncol(ra))
+    audit<-data.frame(group=group,milk_month=MILK_MONTH,arsenic=o,feature=colnames(ra),
+      n=n,n_positive=positive,n_at_threshold=above,selected=keep,raw_RA_varies=variable,
+      reason=ifelse(ambiguous,"ambiguous label",ifelse(positive==0,"all zero in eligible set",
+        ifelse(!keep,"below abundance/prevalence rule",ifelse(!variable,"constant raw RA","eligible")))))
+    audits[[o]]<-audit
+    eligibility[[o]]<-data.frame(group=rep(group,n),arsenic=rep(o,n),family_id=md$family_id,
+                                milk_sample=md$sample_id,stool_sample=micro$meta$sample_id[idx])
+    selected<-ra[seq_len(nrow(ra)),keep,drop=FALSE]
+    status<-if(n<MIN_N)"insufficient eligible samples" else if(ncol(selected)<2L)
+      "fewer than two retained genera" else if(any(rowSums(selected)<=0))
+        "zero retained mass" else "estimated"
+    statuses[[o]]<-data.frame(group=group,arsenic=o,n=n,n_genera=ncol(selected),status=status)
+    if(status!="estimated")next
+    for(delta in c(ZERO_REPLACEMENTS,NA_real_)) {
+      method<-if(is.na(delta))"raw_RA_sensitivity" else paste0("CLR_",format(delta,scientific=TRUE))
+      mat<-if(is.na(delta))selected else zero_clr(selected,delta)
+      primary<-is.finite(delta)&&delta==PRIMARY_ZERO
+      for(tax in colnames(selected)) {
+        j<-match(tax,colnames(ra))
+        stat<-if(variable[j])cor_stats(md[[o]],mat[seq_len(nrow(mat)),tax],bootstrap=primary,
+                                      seed=seed_key(c(group,o,tax))) else
+          data.frame(rho=NA_real_,ci_low=NA_real_,ci_high=NA_real_,p=NA_real_,
+                     bootstrap_valid=0L,status="constant raw RA; not tested")
+        effects[[length(effects)+1L]]<-cbind(data.frame(group=group,milk_month=MILK_MONTH,
+          arsenic=o,feature=tax,n=n,n_positive=positive[j],n_at_threshold=above[j],
+          n_CLR_genera=ncol(selected),method=method,pseudocount=delta,is_primary=primary),stat)
+      }
+    }
+  }
+  list(effects=bind_rows_safe(effects),filtering=bind_rows_safe(audits),
+       eligibility=bind_rows_safe(eligibility),status=bind_rows_safe(statuses))
+}
+normal_genus <- function(x)gsub("[^a-z0-9]","",tolower(sub("^g_","",x)))
+pretty_genus <- function(x) {
+  x<-gsub("_"," ",sub("^g_","",x));paste0(toupper(substr(x,1,1)),substring(x,2))
+}
+pretty_as <- function(x)unname(c(asb="AsB",ias="iAs",dma="DMA",mma="MMA",
+                               methylated_as="MMA + DMA",non_asb_as="Non-AsB As")[x])
+```
+
+# File-only graphics engine and preflight
+
+Figures are drawn to explicit files, never to RStudio's plot pane. The editable
+SVG is written directly as XML first; vector PDF and 600-dpi PNG are attempted
+independently. An unavailable PNG backend is logged and cannot destroy the
+scientific tables or vector exports. No failure is silently labelled complete.
+
+```{r file-only-graphics, include=FALSE}
+# Explicit file-only renderer. Never uses RStudioGD, ggsave's default device,
+# print.ggplot(), or knitr's PNG capture. Coordinates are points (72 per inch).
+FIGURE_REGISTRY <- list()
+DEVICE_ATTEMPTS <- list()
+M07_GRAPHICS_RELEASE <- "M07_network_file_devices_v2"
+COL <- list(ink="#243744", muted="#5D6A72", rule="#CCD4DA", paper="#FFFFFF",
+  study="#F0F5F8", reference="#F7F5EF", positive="#AE5638", negative="#2C6687",
+  ref="#81898F", faint="#EDF0F2")
+xml_escape <- function(x) {
+  x <- as.character(x)
+  x <- gsub("&", "&amp;", x, fixed=TRUE)
+  x <- gsub("<", "&lt;", x, fixed=TRUE)
+  x <- gsub(">", "&gt;", x, fixed=TRUE)
+  x <- gsub('"', "&quot;", x, fixed=TRUE)
+  x
+}
+plain_text <- function(x) {
+  x <- gsub("\u2013|\u2014|\u2212", "-", as.character(x))
+  x <- gsub("\u2265", ">=", x, fixed=TRUE)
+  x <- gsub("\u03c1", "rho", x, fixed=TRUE)
+  x <- gsub("\u2192", "--", x, fixed=TRUE)
+  iconv(x, from="", to="ASCII//TRANSLIT", sub="?")
+}
+scene_new <- function(width_pt, height_pt, title) {
+  s <- new.env(parent=emptyenv())
+  s$width <- as.numeric(width_pt); s$height <- as.numeric(height_pt)
+  s$title <- plain_text(title); s$items <- list()
+  s
+}
+scene_add <- function(s, type, ...) {
+  s$items[[length(s$items)+1L]] <- c(list(type=type), list(...))
+  invisible(s)
+}
+sc_rect <- function(s,x,y,w,h,fill=COL$paper,stroke=COL$rule,lw=.6,r=0) {
+  scene_add(s,"rect",x=x,y=y,w=w,h=h,fill=fill,stroke=stroke,lw=lw,r=r)
+}
+sc_text <- function(s,x,y,text,size=10,colour=COL$ink,face="plain",anchor="start") {
+  scene_add(s,"text",x=x,y=y,text=plain_text(text),size=size,colour=colour,face=face,anchor=anchor)
+}
+sc_multiline <- function(s,x,y,text,size=10,leading=13,colour=COL$ink,
+                         face="plain",anchor="start") {
+  lines <- strsplit(as.character(text),"\n",fixed=TRUE)[[1L]]
+  if (!length(lines)) lines <- ""
+  yy <- y+(seq_along(lines)-(length(lines)+1)/2)*leading
+  for (i in seq_along(lines)) sc_text(s,x,yy[i],lines[i],size,colour,face,anchor)
+  invisible(s)
+}
+sc_line <- function(s,x,y,xend,yend,colour=COL$rule,lw=.7,dash="") {
+  scene_add(s,"line",x=x,y=y,xend=xend,yend=yend,colour=colour,lw=lw,dash=dash)
+}
+sc_circle <- function(s,x,y,r=3,fill=COL$paper,stroke=COL$ink,lw=1) {
+  scene_add(s,"circle",x=x,y=y,r=r,fill=fill,stroke=stroke,lw=lw)
+}
+sc_curve <- function(s,x,y,xend,yend,colour=COL$ref,lw=1,dash="") {
+  t <- seq(0,1,length.out=65L); dx <- xend-x
+  xx <- (1-t)^3*x+3*(1-t)^2*t*(x+.42*dx)+3*(1-t)*t^2*(x+.58*dx)+t^3*xend
+  yy <- (1-t)^3*y+3*(1-t)^2*t*y+3*(1-t)*t^2*yend+t^3*yend
+  scene_add(s,"polyline",xx=xx,yy=yy,colour=colour,lw=lw,dash=dash)
+}
+write_scene_svg <- function(s,path) {
+  # This export is plain XML; it needs NO R graphics device or display server.
+  f <- function(x) formatC(x,digits=3,format="f",decimal.mark=".")
+  z <- c('<?xml version="1.0" encoding="UTF-8"?>',
+    sprintf('<svg xmlns="http://www.w3.org/2000/svg" width="%sin" height="%sin" viewBox="0 0 %s %s" role="img">',
+      f(s$width/72),f(s$height/72),f(s$width),f(s$height)),
+    paste0("<title>",xml_escape(s$title),"</title>"),
+    sprintf('<rect width="%s" height="%s" fill="white"/>',f(s$width),f(s$height)))
+  for (a in s$items) {
+    if (a$type=="rect") z <- c(z,sprintf(
+      '<rect x="%s" y="%s" width="%s" height="%s" rx="%s" fill="%s" stroke="%s" stroke-width="%s"/>',
+      f(a$x),f(a$y),f(a$w),f(a$h),f(a$r),a$fill,a$stroke,f(a$lw)))
+    if (a$type=="text") {
+      weight <- if (a$face %in% c("bold","bold.italic")) "bold" else "normal"
+      style <- if (a$face %in% c("italic","bold.italic")) "italic" else "normal"
+      z <- c(z,sprintf(paste0('<text x="%s" y="%s" font-family="Arial, Helvetica, sans-serif" ',
+        'font-size="%s" font-weight="%s" font-style="%s" text-anchor="%s" ',
+        'dominant-baseline="central" fill="%s">%s</text>'),
+        f(a$x),f(a$y),f(a$size),weight,style,a$anchor,a$colour,xml_escape(a$text)))
+    }
+    if (a$type=="line") z <- c(z,sprintf(
+      '<line x1="%s" y1="%s" x2="%s" y2="%s" stroke="%s" stroke-width="%s" stroke-dasharray="%s" stroke-linecap="round"/>',
+      f(a$x),f(a$y),f(a$xend),f(a$yend),a$colour,f(a$lw),a$dash))
+    if (a$type=="circle") z <- c(z,sprintf(
+      '<circle cx="%s" cy="%s" r="%s" fill="%s" stroke="%s" stroke-width="%s"/>',
+      f(a$x),f(a$y),f(a$r),a$fill,a$stroke,f(a$lw)))
+    if (a$type=="polyline") {
+      pts <- paste(paste(f(a$xx),f(a$yy),sep=","),collapse=" ")
+      z <- c(z,sprintf(
+        '<polyline points="%s" fill="none" stroke="%s" stroke-width="%s" stroke-dasharray="%s" stroke-linecap="round" stroke-linejoin="round"/>',
+        pts,a$colour,f(a$lw),a$dash))
+    }
+  }
+  writeLines(c(z,"</svg>"),path,useBytes=TRUE)
+  invisible(path)
+}
+draw_scene_grid <- function(s) {
+  # Called ONLY after this module has explicitly opened a file device.
+  if (grDevices::dev.cur()==1L) stop("No explicit output device is open.")
+  grid::grid.newpage()
+  grid::grid.rect(gp=grid::gpar(fill="white",col=NA))
+  xx <- function(x) grid::unit(x/s$width,"npc")
+  yy <- function(y) grid::unit(1-y/s$height,"npc")
+  lty <- function(x) if (!nzchar(x)) "solid" else if (x=="1,3") "dotted" else "dashed"
+  # R line widths are in nominal 1/96 inch; scene widths are 1/72 inch.
+  for (a in s$items) {
+    if (a$type=="rect") {
+      gp <- grid::gpar(fill=a$fill,col=a$stroke,lwd=a$lw*96/72)
+      if (a$r>0) {
+        grid::grid.roundrect(x=xx(a$x+a$w/2),y=yy(a$y+a$h/2),
+          width=xx(a$w),height=grid::unit(a$h/s$height,"npc"),
+          r=grid::unit(a$r,"bigpts"),gp=gp)
+      } else grid::grid.rect(x=xx(a$x+a$w/2),y=yy(a$y+a$h/2),
+        width=xx(a$w),height=grid::unit(a$h/s$height,"npc"),gp=gp)
+    }
+    if (a$type=="text") grid::grid.text(a$text,x=xx(a$x),y=yy(a$y),
+      just=c(if(a$anchor=="start")"left" else if(a$anchor=="end")"right" else "centre","centre"),
+      gp=grid::gpar(fontfamily="sans",fontsize=a$size,fontface=a$face,col=a$colour))
+    if (a$type=="line") grid::grid.lines(x=xx(c(a$x,a$xend)),y=yy(c(a$y,a$yend)),
+      gp=grid::gpar(col=a$colour,lwd=a$lw*96/72,lty=lty(a$dash),lineend="round"))
+    if (a$type=="polyline") grid::grid.lines(x=xx(a$xx),y=yy(a$yy),
+      gp=grid::gpar(col=a$colour,lwd=a$lw*96/72,lty=lty(a$dash),lineend="round"))
+    if (a$type=="circle") grid::grid.circle(x=xx(a$x),y=yy(a$y),r=grid::unit(a$r,"bigpts"),
+      gp=grid::gpar(fill=a$fill,col=a$stroke,lwd=a$lw*96/72))
+  }
+  invisible(NULL)
+}
+write_device_attempts <- function() {
+  d <- bind_rows_safe(DEVICE_ATTEMPTS)
+  write.csv(d,file.path(ROOT,"logs","GRAPHICS_DEVICE_ATTEMPTS.csv"),row.names=FALSE,na="")
+  invisible(d)
+}
+file_device_attempt <- function(s,path,device,dpi=NA_integer_,preflight=FALSE) {
+  before <- grDevices::dev.list(); old_ids <- if(is.null(before))integer() else as.integer(before)
+  warnings_seen <- character(); success <- FALSE; detail <- ""
+  # Only close devices opened here, never the user's existing devices.
+  close_new <- function() {
+    current <- grDevices::dev.list()
+    if (!is.null(current)) for (id in setdiff(as.integer(current),old_ids)) {
+      try(grDevices::dev.off(which=id),silent=TRUE)
+    }
+  }
+  on.exit(close_new(),add=TRUE)
+  if(file.exists(path)) unlink(path)
+  detail <- tryCatch(withCallingHandlers({
+    if(device=="base_pdf") grDevices::pdf(path,width=s$width/72,height=s$height/72,
+      onefile=FALSE,family="Helvetica",useDingbats=FALSE,paper="special",bg="white")
+    if(device=="ragg_png") ragg::agg_png(path,width=s$width/72,height=s$height/72,
+      units="in",res=dpi,background="white")
+    if(device=="cairo_png") grDevices::png(path,width=s$width/72,height=s$height/72,
+      units="in",res=dpi,type="cairo-png",bg="white")
+    draw_scene_grid(s)
+    close_new()
+    if(!file.exists(path)||file.info(path)$size<100L) stop("No nonempty figure file was written.")
+    success <- TRUE
+    "File exported and device closed"
+  },warning=function(w) {warnings_seen <<- c(warnings_seen,conditionMessage(w));invokeRestart("muffleWarning")}),
+    error=function(e) conditionMessage(e))
+  close_new()
+  if(!success && file.exists(path)) unlink(path)
+  DEVICE_ATTEMPTS[[length(DEVICE_ATTEMPTS)+1L]] <<- data.frame(
+    timestamp=as.character(Sys.time()),file=path,device=device,dpi=dpi,
+    width_in=s$width/72,height_in=s$height/72,success=success,preflight=preflight,
+    detail=detail,warnings=paste(unique(warnings_seen),collapse=" | "),stringsAsFactors=FALSE)
+  write_device_attempts()
+  success
+}
+save_scene <- function(s,stem,preflight=FALSE) {
+  stopifnot(is.environment(s),is.finite(s$width),is.finite(s$height),
+            s$width>0,s$height>0,s$width<=1200,s$height<=900)
+  directory <- if(preflight) file.path(ROOT,"logs","graphics_test") else FIG_DIR
+  dir.create(directory,recursive=TRUE,showWarnings=FALSE)
+  stem <- gsub("[^A-Za-z0-9_-]","_",stem)
+  svg <- file.path(directory,paste0(stem,".svg"))
+  pdf <- file.path(directory,paste0(stem,".pdf"))
+  png <- file.path(directory,paste0(stem,".png"))
+  for (p in c(svg,pdf,png)) if(file.exists(p)) unlink(p)
+  # Write vector XML first. A failed PNG device cannot remove the SVG or PDF.
+  write_scene_svg(s,svg)
+  pdf_ok <- file_device_attempt(s,pdf,"base_pdf",preflight=preflight)
+  dpi <- if(preflight)96L else PLOT_DPI
+  png_ok <- FALSE
+  pixels <- (s$width/72*dpi)*(s$height/72*dpi)
+  if(pixels<=MAX_PNG_PIXELS) {
+    if(requireNamespace("ragg",quietly=TRUE))
+      png_ok <- file_device_attempt(s,png,"ragg_png",dpi,preflight)
+    if(!png_ok && isTRUE(capabilities("cairo")))
+      png_ok <- file_device_attempt(s,png,"cairo_png",dpi,preflight)
+  }
+  if(!png_ok && (pixels>MAX_PNG_PIXELS ||
+       (!requireNamespace("ragg",quietly=TRUE) && !isTRUE(capabilities("cairo"))))) {
+    DEVICE_ATTEMPTS[[length(DEVICE_ATTEMPTS)+1L]] <<- data.frame(
+      timestamp=as.character(Sys.time()),file=png,device="PNG_not_attempted",dpi=dpi,
+      width_in=s$width/72,height_in=s$height/72,success=FALSE,preflight=preflight,
+      detail=if(pixels>MAX_PNG_PIXELS)"Raster pixel limit exceeded; vector retained, no silent DPI reduction" else
+        "Neither ragg nor Cairo PNG support is available; vector exports retained",
+      warnings="",stringsAsFactors=FALSE)
+    write_device_attempts()
+  }
+  status <- if(pdf_ok && png_ok) "complete" else "vectors_available_graphics_warning"
+  if(!preflight) {
+    FIGURE_REGISTRY[[length(FIGURE_REGISTRY)+1L]] <<- data.frame(
+      figure=stem,title=s$title,svg=svg,pdf=if(pdf_ok)pdf else NA_character_,
+      png=if(png_ok)png else NA_character_,png_dpi=if(png_ok)dpi else NA_integer_,
+      width_in=s$width/72,height_in=s$height/72,status=status,stringsAsFactors=FALSE)
+    write.csv(bind_rows_safe(FIGURE_REGISTRY),file.path(ROOT,"FIGURE_EXPORT_MANIFEST.csv"),row.names=FALSE,na="")
+  }
+  if(!pdf_ok || !png_ok) message("Figure ",stem,": editable SVG retained. ",
+    if(!pdf_ok)"PDF failed; " else "PDF saved; ",
+    if(!png_ok)"PNG unavailable. See logs/GRAPHICS_DEVICE_ATTEMPTS.csv." else "PNG saved.")
+  # Never print a plot: printing would open RStudio/knitr's default PNG device.
+  invisible(list(svg=svg,pdf_ok=pdf_ok,png_ok=png_ok))
+}
+fmt_p <- function(x) {
+  ans <- rep("NA",length(x)); ok <- is.finite(x)
+  ans[ok] <- ifelse(x[ok]<.001,formatC(x[ok],format="e",digits=1),sprintf("%.3f",x[ok]))
+  ans
+}
+wrap_label <- function(x,width=24L) paste(strwrap(plain_text(x),width=width),collapse="\n")
+row_pages <- function(a,max_rows) {
+  if(!nrow(a)) return(list(a))
+  ii <- split(seq_len(nrow(a)),ceiling(seq_len(nrow(a))/max_rows))
+  lapply(ii,function(i) take_rows(a,i))
+}
+
+# Pure display-selection helper. Never refits a model or recalculates p/q.
+# Externally supported means a gene-specific candidate on a protein of the SAME
+# UHGG representative, not mere genus presence in a gut catalogue.
+reference_plot_selection <- function(primary, associations, mapping, candidates,
+                                     reference_genomes, markers, rule="nominal") {
+  stopifnot(rule %in% c("nominal","FDR"))
+  required <- list(
+    primary=c("group","feature","arsenic","p","q_all_milk"),
+    associations=c("group","feature","arsenic","association_id","p","q_all_milk"),
+    mapping=c("feature","species_rep"),
+    candidates=c("feature","species_rep","protein_id","gene","preferred_name",
+                 "reference_evidence","sequence_supported"),
+    reference_genomes=c("species_rep"), markers=c("gene"))
+  inputs <- list(primary=primary,associations=associations,mapping=mapping,
+    candidates=candidates,reference_genomes=reference_genomes,markers=markers)
+  for(nm in names(required)) {
+    missing <- setdiff(required[[nm]],names(inputs[[nm]]))
+    if(length(missing)) stop("Display filter: ",nm," lacks ",paste(missing,collapse=", "))
+  }
+  nonblank <- function(x) !is.na(x) & nzchar(trimws(as.character(x)))
+  key <- function(feature,representative) {
+    if(!length(feature)) return(character())
+    paste(feature,representative,sep="|")
+  }
+  ca <- candidates
+  n <- nrow(ca)
+  ca$known_gut_representative <- nonblank(ca$species_rep) &
+    ca$species_rep %in% reference_genomes$species_rep
+  ca$known_taxonomic_bridge <- key(ca$feature,ca$species_rep) %in%
+    key(mapping$feature,mapping$species_rep)
+  ca$protein_from_same_representative <- rep(FALSE,n)
+  valid_ids <- nonblank(ca$species_rep) & nonblank(ca$protein_id)
+  if(any(valid_ids)) ca$protein_from_same_representative[valid_ids] <-
+    startsWith(ca$protein_id[valid_ids],paste0(ca$species_rep[valid_ids],"_"))
+  exact_annotation <- annotation_matches(ca$preferred_name,ca$gene)
+  exact_annotation[is.na(exact_annotation)] <- FALSE
+  homology <- !is.na(ca$sequence_supported) & ca$sequence_supported
+  supported_label <- ca$reference_evidence %in%
+    c("Annotation-only candidate","Homology + annotation candidate","Homology-only candidate")
+  evidence_consistent <-
+    (ca$reference_evidence=="Annotation-only candidate" & exact_annotation) |
+    (ca$reference_evidence=="Homology + annotation candidate" & exact_annotation & homology) |
+    (ca$reference_evidence=="Homology-only candidate" & homology)
+  evidence_consistent[is.na(evidence_consistent)] <- FALSE
+  ca$display_candidate_eligible <- ca$known_gut_representative &
+    ca$known_taxonomic_bridge & ca$protein_from_same_representative &
+    ca$gene %in% markers$gene & supported_label & evidence_consistent
+  ca$display_evidence_status <- ifelse(ca$display_candidate_eligible,
+    "Eligible external candidate; NOT a participant gene measurement",
+    "Ineligible reference row: inspect representative, protein, marker and evidence fields")
+  valid_candidates <- take_rows(ca,ca$display_candidate_eligible)
+  audit <- primary
+  audit$reference_search_status <- rep(REFERENCE_STATUS,nrow(audit))
+  audit$passes_statistical_rule <- if(rule=="nominal")
+    is.finite(audit$p)&audit$p<0.05 else
+    is.finite(audit$q_all_milk)&audit$q_all_milk<0.05
+  audit$reference_followup_performed <- audit$feature %in% unique(mapping$feature)
+  audit$has_gut_gene_reference <- rep(NA,nrow(audit))
+  audit$n_gene_supported_representatives <- rep(NA_integer_,nrow(audit))
+  audit$n_candidate_markers <- rep(NA_integer_,nrow(audit))
+  audit$reference_status <- rep("Not assessed: not selected for taxonomic follow-up",nrow(audit))
+  for(g in unique(audit$feature[audit$reference_followup_performed])) {
+    ix <- which(audit$feature==g)
+    cg <- take_rows(valid_candidates,valid_candidates$feature==g)
+    mg <- take_rows(mapping,mapping$feature==g & nonblank(mapping$species_rep))
+    audit$has_gut_gene_reference[ix] <- nrow(cg)>0L
+    audit$n_gene_supported_representatives[ix] <- length(unique(cg$species_rep))
+    audit$n_candidate_markers[ix] <- length(unique(cg$gene))
+    audit$reference_status[ix] <- if(nrow(cg))
+      "Gene candidate on a mapped human-gut representative" else if(nrow(mg))
+      "Mapped gut representatives, but no qualifying gene candidate in this screen" else
+      "No documented genus-to-reference link in the full catalogue"
+  }
+  audit$included_in_main_plot <- audit$passes_statistical_rule &
+    !is.na(audit$has_gut_gene_reference) & audit$has_gut_gene_reference
+  audit$display_reason <- ifelse(audit$included_in_main_plot,
+    "Plotted: statistical rule AND gut reference gene candidate",
+    ifelse(!audit$passes_statistical_rule,"Not plotted: statistical rule not met",
+      "Not plotted: no qualifying mapped gene evidence; inspect coverage and taxonomy audits"))
+  supported_features <- unique(valid_candidates$feature)
+  shown <- take_rows(associations,associations$feature %in% supported_features)
+  # Recheck the chosen statistical rule, never rely only on upstream selection.
+  shown <- take_rows(shown,if(rule=="nominal")is.finite(shown$p)&shown$p<0.05 else
+    is.finite(shown$q_all_milk)&shown$q_all_milk<0.05)
+  shown$has_gut_gene_reference <- rep(TRUE,nrow(shown))
+  if(nrow(shown)) {
+    mi <- match(shown$feature,audit$feature)
+    shown$n_gene_supported_representatives <- audit$n_gene_supported_representatives[mi]
+    shown$n_candidate_markers <- audit$n_candidate_markers[mi]
+  } else {
+    shown$n_gene_supported_representatives <- integer()
+    shown$n_candidate_markers <- integer()
+  }
+  pc <- take_rows(valid_candidates,valid_candidates$feature %in% shown$feature)
+  pm <- take_rows(mapping,key(mapping$feature,mapping$species_rep) %in%
+    key(pc$feature,pc$species_rep))
+  # Strict table uses the original milk-wide FDR, not an FDR of displayed links.
+  strict <- take_rows(shown,is.finite(shown$q_all_milk)&shown$q_all_milk<0.05)
+  groups <- unique(c("Maternal","Infant",as.character(primary$group)))
+  counts <- bind_rows_safe(lapply(groups,function(gr) {
+    d <- take_rows(audit,audit$group==gr)
+    s <- take_rows(shown,shown$group==gr)
+    data.frame(group=gr,display_rule=rule,n_primary_tests=nrow(d),
+      n_finite_p=sum(is.finite(d$p)),n_statistical_followup=sum(d$passes_statistical_rule),
+      n_plotted_links=nrow(s),n_plotted_genera=length(unique(s$feature)),
+      n_omitted_for_reference=sum(d$passes_statistical_rule & !d$included_in_main_plot),
+      n_plotted_milk_wide_FDR=sum(is.finite(s$q_all_milk)&s$q_all_milk<0.05),
+      status=if(nrow(s))"Supported network/forest exported" else
+        "No main figure: no link meets BOTH display criteria",
+      stringsAsFactors=FALSE)
+  }))
+  list(associations=shown,candidates=pc,mapping=pm,audit=audit,counts=counts,
+       strict_FDR=strict,candidate_checks=ca)
+}
+
+network_pages <- function(a) {
+  pages <- list()
+  if(!nrow(a))return(pages)
+  for(g in sort(unique(a$feature))) {
+    aa <- take_rows(a,a$feature==g)
+    ids <- sort(unique(plot_mapping$species_rep[plot_mapping$feature==g]))
+    blocks <- split(ids,ceiling(seq_along(ids)/8L))
+    for(ids1 in blocks) {
+      cc <- take_rows(plot_candidates,plot_candidates$feature==g & plot_candidates$species_rep%in%ids1)
+      genes <- sort(unique(cc$gene))
+      gene_blocks <- split(genes,ceiling(seq_along(genes)/8L))
+      for(gs in gene_blocks) {
+        cp <- take_rows(cc,cc$gene%in%gs)
+        mp <- take_rows(plot_mapping,plot_mapping$feature==g & plot_mapping$species_rep%in%cp$species_rep)
+        pages[[length(pages)+1L]] <- list(a=aa,mapping=mp,candidates=cp)
+      }
+    }
+  }
+  pages
+}
+network_geometry <- function(a,s,page_map,page_candidates) {
+  # Main network contains only representatives with an eligible candidate protein.
+  # Full mapping/annotation negatives and unresolved labels remain in audit tables.
+  gen <- sort(unique(a$feature)); refrows <- list()
+  for(g in gen) {
+    rr <- take_rows(page_map,page_map$feature==g)
+    if(!nrow(rr)) stop("Display gate mismatch: no supported representative for ",g)
+    if(nrow(rr)) {
+      rr <- rr[order(rr$gtdb_species,rr$species_rep),seq_len(ncol(rr)),drop=FALSE]
+      for(i in seq_len(nrow(rr))) {
+        cg <- take_rows(page_candidates,page_candidates$feature==g & page_candidates$species_rep==rr$species_rep[i])
+        if(!nrow(cg)) stop("Display gate mismatch: reference has no candidate protein")
+        refrows[[length(refrows)+1L]] <- data.frame(id=paste("R",g,rr$species_rep[i],sep=":"),
+          feature=g,species_rep=rr$species_rep[i],species=if(nzchar(rr$gtdb_species[i]))rr$gtdb_species[i] else paste(rr$gtdb_genus[i],"unclassified species"),
+          real=TRUE,has_marker=nrow(cg)>0L,
+          evidence_label=if(!nrow(cg))"No specific marker annotation in this reference screen" else
+            if(any(cg$reference_evidence=="Homology + annotation candidate"))"Candidate: annotation + homology" else
+            if(any(cg$sequence_supported))"Candidate: sequence homology" else "Candidate: annotation only",
+          stringsAsFactors=FALSE)
+      }
+    } else refrows[[length(refrows)+1L]] <- data.frame(id=paste0("U:",g),feature=g,
+      species_rep="",species="Taxonomic link unresolved",real=FALSE,has_marker=FALSE,
+      evidence_label="Taxonomic link unresolved",stringsAsFactors=FALSE)
+  }
+  refs <- bind_rows_safe(refrows)
+  top <- 176; bottom <- s$height-148
+  rr_y <- if(nrow(refs)==1L) (top+bottom)/2 else seq(top,bottom,length.out=nrow(refs))
+  refs$y <- rr_y
+  ng <- lapply(gen,function(g) {
+    yi <- refs$y[refs$feature==g]
+    data.frame(id=paste0("G:",g),type="Observed genus",feature=g,
+      label=pretty_genus(g),x=315,y=mean(yi),width=202,height=58)
+  })
+  genera <- bind_rows_safe(ng)
+  ars <- intersect(c("asb","ias","dma","mma","methylated_as","non_asb_as"),unique(a$arsenic))
+  ya <- if(length(ars)==1L) mean(genera$y) else seq(top,bottom,length.out=length(ars))
+  arnodes <- data.frame(id=paste0("A:",ars),type="Milk arsenic",feature=ars,label=pretty_as(ars),
+    x=80,y=ya,width=116,height=42)
+  refnodes <- data.frame(id=refs$id,type=ifelse(refs$real,"Human-gut representative","Unresolved reference"),
+    feature=refs$species_rep,label=refs$species,x=652,y=refs$y,width=262,height=58)
+  cc <- take_rows(page_candidates,page_candidates$feature %in% gen)
+  genes <- sort(unique(cc$gene))
+  yh <- if(length(genes)==1L) mean(refs$y[refs$has_marker]) else
+    if(length(genes))seq(top,bottom,length.out=length(genes)) else numeric()
+  gn <- data.frame(id=if(length(genes))paste0("H:",genes)else character(),
+    type=rep("Candidate gene",length(genes)),
+    feature=genes,label=genes,x=rep(932,length(genes)),y=yh,
+    width=rep(102,length(genes)),height=rep(50,length(genes)))
+  nodes <- rbind(arnodes,genera,refnodes,gn)
+  edges <- list()
+  add_edge <- function(from,to,kind,assoc="",rho=NA_real_) {
+    edges[[length(edges)+1L]] <<- data.frame(from=from,to=to,kind=kind,
+      association_id=assoc,rho=rho,stringsAsFactors=FALSE)
+  }
+  for(i in seq_len(nrow(a))) add_edge(paste0("A:",a$arsenic[i]),paste0("G:",a$feature[i]),
+    a$evidence[i],a$association_id[i],a$rho[i])
+  for(i in seq_len(nrow(refs))) add_edge(paste0("G:",refs$feature[i]),refs$id[i],
+    if(refs$real[i])"Taxonomic reference link" else "Unresolved reference")
+  if(nrow(cc)) {
+    cols <- c("feature","species_rep","gene","reference_evidence")
+    u <- unique(cc[seq_len(nrow(cc)),cols,drop=FALSE])
+    # Show the strongest available evidence per representative/marker pair;
+    # every contributing protein remains in the candidate-links table.
+    priority <- c("Homology + annotation candidate"=1L,
+                  "Homology-only candidate"=2L,"Annotation-only candidate"=3L)
+    u <- take_rows(u,order(unname(priority[u$reference_evidence]),na.last=TRUE))
+    u <- take_rows(u,!duplicated(paste(u$feature,u$species_rep,u$gene,sep="|")))
+    for(i in seq_len(nrow(u))) add_edge(paste("R",u$feature[i],u$species_rep[i],sep=":"),
+      paste0("H:",u$gene[i]),u$reference_evidence[i])
+  }
+  list(nodes=nodes,edges=bind_rows_safe(edges),refs=refs)
+}
+network_scene <- function(a,gr,page,total,page_map,page_candidates) {
+  W <- 1008
+  nref <- sum(vapply(unique(a$feature),function(g)
+    max(1L,length(unique(page_map$species_rep[page_map$feature==g]))),integer(1)))
+  H <- min(900,max(540,310+max(nref,length(unique(a$arsenic)),1)*62))
+  s <- scene_new(W,H,paste(gr,"milk arsenic / stool genus / human-gut gene candidates"))
+  sc_text(s,24,27,paste(gr,"faecal genera and milk arsenic"),19,face="bold")
+  sc_text(s,24,51,paste0("Month-1 stool | Milk month ",MILK_MONTH,
+    " | ",if(FOLLOWUP_RULE=="nominal")"Nominal p < 0.05" else "q(all milk) < 0.05",
+    " + human-gut gene-reference support | Page ",page,"/",total),10.5,colour=COL$muted)
+  sc_rect(s,16,78,417,H-191,COL$study,COL$study,r=7)
+  sc_rect(s,497,78,495,H-191,COL$reference,COL$reference,r=7)
+  sc_text(s,30,96,"MEASURED IN MAMI",11.5,face="bold")
+  sc_text(s,511,96,"EXTERNAL REFERENCE EVIDENCE",11.5,face="bold")
+  sc_text(s,80,126,"Milk arsenic",10.5,face="bold",anchor="middle")
+  sc_text(s,315,126,"Faecal genus (16S)",10.5,face="bold",anchor="middle")
+  sc_text(s,652,126,"Human-gut representative",10.5,face="bold",anchor="middle")
+  sc_text(s,932,126,"Candidate gene",10.5,face="bold",anchor="middle")
+  sc_line(s,464,80,464,H-118,COL$rule,.8,"1,3")
+  if(!nrow(a)) {
+    sc_multiline(s,W/2,280,paste0("No associations meet BOTH criteria: ",FOLLOWUP_RULE," threshold and gene-reference support.\n",
+      "Absence of a plotted path is not a gene-absence or null-association claim."),12,18,anchor="middle")
+    return(list(scene=s,nodes=data.frame(),edges=data.frame()))
+  }
+  net <- network_geometry(a,s,page_map,page_candidates); nd <- net$nodes; ed <- net$edges
+  from_idx <- match(ed$from,nd$id); to_idx <- match(ed$to,nd$id)
+  if(anyNA(from_idx)||anyNA(to_idx)) stop("Network edge references a missing node.")
+  # Multiple observed links use distinct ports on each box.
+  port <- function(ids,step=7) {
+    out <- numeric(length(ids))
+    for(id in unique(ids)) {j<-which(ids==id);out[j]<-(seq_along(j)-(length(j)+1)/2)*step}
+    out
+  }
+  dy0 <- port(ed$from,5); dy1 <- port(ed$to,5)
+  for(i in seq_len(nrow(ed))) {
+    ni <- from_idx[i]; nj <- to_idx[i]
+    observed <- nzchar(ed$association_id[i])
+    color <- if(observed) if(ed$rho[i]>0)COL$positive else COL$negative else COL$ref
+    dash <- if(observed) if(ed$kind[i]=="FDR-supported association")"" else "5,3" else
+      if(ed$kind[i] %in% c("Taxonomic reference link","Unresolved reference"))"1,3" else
+      if(ed$kind[i]=="Annotation-only candidate")"5,3" else ""
+    lw <- if(observed) .6+1.8*abs(ed$rho[i]) else .9
+    sc_curve(s,nd$x[ni]+nd$width[ni]/2+2,nd$y[ni]+dy0[i],
+      nd$x[nj]-nd$width[nj]/2-2,nd$y[nj]+dy1[i],color,lw,dash)
+  }
+  for(i in seq_len(nrow(nd))) {
+    a1 <- nd[i,seq_len(ncol(nd)),drop=FALSE]
+    stroke <- if(a1$type=="Observed genus")COL$ink else COL$rule
+    sc_rect(s,a1$x-a1$width/2,a1$y-a1$height/2,a1$width,a1$height,COL$paper,stroke,.65,5)
+    if(a1$type=="Human-gut representative") {
+      r <- net$refs[match(a1$id,net$refs$id),seq_len(ncol(net$refs)),drop=FALSE]
+      sc_multiline(s,a1$x,a1$y-12,wrap_label(a1$label,34),10.2,11.5,face="italic",anchor="middle")
+      sc_text(s,a1$x,a1$y+9,r$species_rep,8.5,colour=COL$muted,anchor="middle")
+      sc_text(s,a1$x,a1$y+21,r$evidence_label,
+        7.6,colour=COL$muted,anchor="middle")
+    } else if(a1$type=="Unresolved reference") {
+      sc_multiline(s,a1$x,a1$y-8,"No exact genus match\nin the searched catalogue",10.2,13,anchor="middle")
+      sc_text(s,a1$x,a1$y+18,"Not evidence of gene absence",8.3,colour=COL$muted,anchor="middle")
+    } else if(a1$type=="Candidate gene") {
+      sc_text(s,a1$x,a1$y-5,a1$label,13.5,face="italic",anchor="middle")
+      sc_text(s,a1$x,a1$y+14,"reference only",8.5,colour=COL$muted,anchor="middle")
+    } else {
+      fontface <- if(a1$type=="Observed genus")"italic" else "bold"
+      label <- wrap_label(a1$label,if(a1$type=="Observed genus")25L else 14L)
+      sc_multiline(s,a1$x,a1$y,label,11,13,face=fontface,anchor="middle")
+    }
+  }
+  if(!any(nd$type=="Candidate gene")) sc_multiline(s,932,(176+H-148)/2,
+    "No candidate link\nin these annotations.\nNot a gene-absence claim.",9,13,colour=COL$muted,anchor="middle")
+  fy <- H-91
+  sc_line(s,25,fy,56,fy,COL$negative,1.7,"5,3");sc_text(s,64,fy,"Negative association",9.1)
+  sc_line(s,227,fy,258,fy,COL$positive,1.7,"5,3");sc_text(s,266,fy,"Positive association",9.1)
+  sc_line(s,430,fy,461,fy,COL$ref,.9,"1,3");sc_text(s,469,fy,"Taxonomic bridge (not observed species)",9.1)
+  sc_line(s,766,fy,797,fy,COL$ref,.9,"5,3");sc_text(s,805,fy,"Annotation-only candidate",9.1)
+  sc_text(s,24,H-64,"Observed edge width = |rho|. Dashed observed links: nominal p < 0.05; solid: q(all milk) < 0.05.",9,colour=COL$muted)
+  sc_text(s,24,H-48,"Solid reference-gene links require passing homology; this is still candidate evidence, not functional proof.",9,colour=COL$muted)
+  sc_text(s,24,H-32,if(REFERENCE_INCOMPLETE)"CAUTION: REFERENCE SCREEN INCOMPLETE. See attempted/completed/failed coverage counts." else
+    "Full requested scope completed. All supported representatives/genes paginated; repeated cohort links are not replication.",9,colour=COL$muted)
+  sc_text(s,24,H-16,"Effect sizes, bootstrap intervals, sample sizes and complete FDR scopes accompany the forest plot and exported tables.",9,colour=COL$muted)
+  j <- match(ed$association_id,a$association_id)
+  for(v in c("n","ci_low","ci_high","p","q_endpoint","q_group","q_all_milk")) ed[[v]] <- a[[v]][j]
+  list(scene=s,nodes=nd,edges=ed)
+}
+plot_network <- function(gr) {
+  a <- take_rows(plot_associations,plot_associations$group==gr)
+  if(!nrow(a)) {
+    message(gr, ": no network exported; no links meet both the statistical rule and reference-gene evidence rule.")
+    return(invisible(NULL))
+  }
+  pages <- network_pages(a)
+  for(i in seq_along(pages)) {
+    obj <- network_scene(pages[[i]]$a,gr,i,length(pages),pages[[i]]$mapping,pages[[i]]$candidates)
+    stem <- paste0("N_",tolower(gr),if(length(pages)>1L)sprintf("_p%02d",i)else "")
+    write_csv(obj$nodes,paste0(stem,"_nodes"));write_csv(obj$edges,paste0(stem,"_edges"))
+    save_scene(obj$scene,stem)
+  }
+  invisible(NULL)
+}
+forest_scene <- function(d,gr,page,total,all_tests=FALSE) {
+  W <- 1080; row_h <- 47; H <- max(330,210+max(1,nrow(d))*row_h)
+  title <- paste(gr,if(all_tests)"milk-genus associations: complete tested family" else
+    if(FOLLOWUP_RULE=="nominal")"nominal milk-genus links with reference-gene support" else
+    "FDR-supported milk-genus links with reference-gene support")
+  s <- scene_new(W,H,title)
+  sc_text(s,20,26,title,17,face="bold")
+  sc_text(s,20,50,paste0("Unadjusted Spearman effects | Pointwise 95% bootstrap intervals | Page ",page,"/",total),10,colour=COL$muted)
+  if(!nrow(d)) {
+    sc_multiline(s,W/2,160,"No eligible associations meet the configured selection rule.\nSee the complete primary test table; this is not an estimated null effect.",12,18,anchor="middle")
+    return(s)
+  }
+  sc_rect(s,16,76,W-32,45,COL$study,COL$study,r=4)
+  x0 <- 414; x1 <- 614
+  xpos <- function(rho) x0+(rho+1)/2*(x1-x0)
+  sc_text(s,25,97,"ID",10,face="bold")
+  sc_multiline(s,72,97,"Milk\nendpoint",10,12,face="bold")
+  sc_text(s,181,97,"Faecal genus",10,face="bold")
+  sc_multiline(s,(x0+x1)/2,97,"Spearman rho\n(95% CI)",10,12,face="bold",anchor="middle")
+  sc_text(s,659,97,"N",10,face="bold",anchor="middle")
+  sc_text(s,760,97,"rho [95% CI]",10,face="bold",anchor="middle")
+  sc_text(s,887,97,"p",10,face="bold",anchor="middle")
+  sc_multiline(s,962,97,"q\n(endpoint)",10,12,face="bold",anchor="middle")
+  sc_multiline(s,1040,97,"q\n(all milk)",10,12,face="bold",anchor="middle")
+  bottom <- 121+nrow(d)*row_h
+  for(t in c(-1,-.5,0,.5,1)) sc_line(s,xpos(t),121,xpos(t),bottom,
+    if(t==0)COL$muted else COL$faint,if(t==0).8 else .6,if(t==0)"1,3" else "")
+  for(i in seq_len(nrow(d))) {
+    y <- 121+(i-.5)*row_h
+    sc_line(s,20,121+i*row_h,W-20,121+i*row_h,COL$faint,.7)
+    sc_text(s,25,y,d$association_id[i],9.2)
+    sc_multiline(s,72,y,wrap_label(pretty_as(d$arsenic[i]),13),10,12)
+    sc_multiline(s,181,y,wrap_label(pretty_genus(d$feature[i]),28),9.9,11.7,face="italic")
+    col <- if(is.finite(d$rho[i]) && d$rho[i]>0)COL$positive else COL$negative
+    if(is.finite(d$ci_low[i]) && is.finite(d$ci_high[i])) {
+      lo <- max(-1,d$ci_low[i]); hi <- min(1,d$ci_high[i])
+      sc_line(s,xpos(lo),y,xpos(hi),y,col,1.2)
+      sc_line(s,xpos(lo),y-3,xpos(lo),y+3,col,.9)
+      sc_line(s,xpos(hi),y-3,xpos(hi),y+3,col,.9)
+    }
+    if(is.finite(d$rho[i])) sc_circle(s,xpos(d$rho[i]),y,3.8,
+      if(is.finite(d$q_all_milk[i]) && d$q_all_milk[i]<.05)col else COL$paper,col,1.2)
+    ci <- if(is.finite(d$ci_low[i]) && is.finite(d$ci_high[i]))
+      sprintf("%+.2f [%+.2f, %+.2f]",d$rho[i],d$ci_low[i],d$ci_high[i]) else
+      if(is.finite(d$rho[i]))sprintf("%+.2f [CI unavailable]",d$rho[i]) else "Not estimated"
+    sc_text(s,659,y,as.character(d$n[i]),10,anchor="middle")
+    sc_text(s,760,y,ci,9.5,anchor="middle")
+    sc_text(s,887,y,fmt_p(d$p[i]),10,anchor="middle")
+    sc_text(s,962,y,fmt_p(d$q_endpoint[i]),10,anchor="middle")
+    sc_text(s,1040,y,fmt_p(d$q_all_milk[i]),10,anchor="middle")
+  }
+  for(t in c(-1,-.5,0,.5,1)) sc_text(s,xpos(t),bottom+16,format(t),9,colour=COL$muted,anchor="middle")
+  sc_text(s,20,H-52,"Open circles: not supported by milk-wide FDR. Filled circles: q(all milk) < 0.05. Nominal p is not FDR support.",9,colour=COL$muted)
+  sc_text(s,20,H-36,"q(endpoint) covers genera within one endpoint/population; q(all milk) covers the full maternal + infant milk-only family.",9,colour=COL$muted)
+  sc_text(s,20,H-20,"Intervals are pointwise and conditional on the retained CLR composition. Related arsenic sums are not independent replications.",9,colour=COL$muted)
+  s
+}
+plot_forest <- function(gr,all_tests=FALSE) {
+  d <- take_rows(if(all_tests)primary else plot_associations,
+    if(all_tests)primary$group==gr else plot_associations$group==gr)
+  if(!nrow(d) && !all_tests) return(invisible(NULL))
+  if(nrow(d)) {
+    d <- d[order(d$feature,d$arsenic),seq_len(ncol(d)),drop=FALSE]
+    if(!"association_id" %in% names(d)) d$association_id <- sprintf("T%03d",seq_len(nrow(d)))
+  }
+  pages <- row_pages(d,12L)
+  for(i in seq_along(pages)) {
+    stem <- paste0(if(all_tests)"S_all_" else "F_",tolower(gr),
+      if(length(pages)>1L)sprintf("_p%02d",i)else "")
+    save_scene(forest_scene(pages[[i]],gr,i,length(pages),all_tests),stem)
+  }
+  invisible(NULL)
+}
+write_html_gallery <- function() {
+  reg <- bind_rows_safe(FIGURE_REGISTRY)
+  html <- c('<!doctype html><html><head><meta charset="utf-8"><title>MAMI module 07 figures</title>',
+    '<style>body{font:16px Arial,sans-serif;max-width:1500px;margin:35px auto;padding:0 20px;color:#243744}',
+    'section{margin:35px 0}svg{width:100%;height:auto}a{margin-right:16px}small{color:#5D6A72}</style></head><body>',
+     '<h1>MAMI: milk arsenic and faecal-genus reference follow-up</h1>',
+    paste0('<p><strong>Reference coverage: ',xml_escape(REFERENCE_STATUS),'</strong></p>'),
+    '<p>Networks are paginated without top-N omissions. Repeated observed links across pages are the same test, not replication.</p>',
+    '<p>Only statistical follow-up links with a gene candidate on a human-gut reference representative are shown. All tests, exclusions and original FDR values remain in the tables.</p>',
+    paste0('<p>Statistical display rule: ',xml_escape(FOLLOWUP_RULE),
+      '. Nominal p &lt; 0.05 is exploratory, not FDR significance. No participant gene carriage is established.</p>'))
+  for(i in seq_len(nrow(display_selection$counts))) {
+    d <- display_selection$counts[i,seq_len(ncol(display_selection$counts)),drop=FALSE]
+    html <- c(html,paste0('<p><strong>',xml_escape(d$group),'</strong>: ',
+      d$n_plotted_links,' supported plotted links of ',d$n_statistical_followup,
+      ' statistically selected links; ',d$n_primary_tests,' primary tests retained. ',
+      xml_escape(d$status),'.</p>'))
+  }
+  for(i in seq_len(nrow(reg))) {
+    svg <- readLines(reg$svg[i],warn=FALSE,encoding="UTF-8")
+    svg <- svg[!grepl("^<\\?xml",svg)]
+    links <- paste0('<a href="figures/',xml_escape(basename(reg$svg[i])),'">Editable SVG</a>')
+    if(!is.na(reg$pdf[i])) links <- paste0(links,'<a href="figures/',xml_escape(basename(reg$pdf[i])),'">Vector PDF</a>')
+    if(!is.na(reg$png[i])) links <- paste0(links,'<a href="figures/',xml_escape(basename(reg$png[i])),'">',reg$png_dpi[i],' dpi PNG</a>')
+    html <- c(html,paste0('<section><h2>',xml_escape(reg$title[i]),'</h2>',links),svg,
+      paste0('<p><small>Export status: ',reg$status[i],'</small></p></section>'))
+  }
+  writeLines(c(html,'</body></html>'),file.path(ROOT,'GALLERY.html'),useBytes=TRUE)
+  invisible(reg)
+}
+# Native graphics preflight. Study data are not used for this test.
+preflight <- scene_new(288,144,"Module 07 graphics self-test")
+sc_text(preflight,18,30,"Explicit file devices: no RStudio plot pane",11,face="bold")
+sc_line(preflight,30,80,250,80,COL$negative,1.3)
+sc_circle(preflight,140,80,4,COL$paper,COL$negative,1.2)
+sc_text(preflight,18,119,"SVG first; PDF/PNG failures logged independently.",9)
+save_scene(preflight,"graphics_preflight",preflight=TRUE)
+
+```
+
+# Recompute milk–genus associations before selecting any candidates
+
+```{r associations}
+milk<-read_sheet("hm_arsenic")
+milk$family_id<-std_family(milk$family_code)
+milk$month<-as.integer(sub("^([0-9]+).*","\\1",trimws(milk$timepoint_month)))
+milk$site<-tolower(trimws(milk$sample_site))
+for(v in c("asb","as_iii","as_v","dma","mma"))milk[[v]]<-num(milk[[v]],v)
+if(any(as.matrix(milk[seq_len(nrow(milk)),c("asb","as_iii","as_v","dma","mma")])<0,na.rm=TRUE))stop("Negative arsenic value.")
+milk<-take_rows(milk,!is.na(milk$site)&milk$site=="milk"&!is.na(milk$month)&milk$month==MILK_MONTH)
+if(anyNA(milk$family_id)||anyDuplicated(milk$family_id))stop("Milk family IDs must be nonmissing and unique within month.")
+milk$ias<-milk$as_iii+milk$as_v
+milk$methylated_as<-milk$mma+milk$dma
+milk$non_asb_as<-milk$ias+milk$methylated_as
+mi<-load_micro("genus_infant_1month","Infant")
+ma<-load_micro("genus_mother_1month","Maternal")
+res<-list(Maternal=run_group(ma,milk,"Maternal"),Infant=run_group(mi,milk,"Infant"))
+effects<-bind_rows_safe(lapply(res,function(x)x$effects))
+filtering<-bind_rows_safe(lapply(res,function(x)x$filtering))
+eligibility<-bind_rows_safe(lapply(res,function(x)x$eligibility))
+analysis_status<-bind_rows_safe(lapply(res,function(x)x$status))
+if(nrow(effects)) {
+  effects$q_endpoint<-effects$q_group<-effects$q_all_milk<-NA_real_
+  for(method in unique(effects$method)) {
+    ix<-which(effects$method==method);effects$q_all_milk[ix]<-bh(effects$p[ix])
+    for(gr in unique(effects$group[ix])) {
+      ig<-ix[effects$group[ix]==gr];effects$q_group[ig]<-bh(effects$p[ig])
+      for(o in unique(effects$arsenic[ig])) {
+        io<-ig[effects$arsenic[ig]==o];effects$q_endpoint[io]<-bh(effects$p[io])
+      }
+    }
+  }
+  primary<-take_rows(effects,effects$is_primary)
+} else {
+  primary<-data.frame(group=character(),milk_month=integer(),arsenic=character(),feature=character(),
+     n=integer(),rho=numeric(),ci_low=numeric(),ci_high=numeric(),p=numeric(),q_all_milk=numeric(),
+     q_group=numeric(),q_endpoint=numeric(),status=character())
+}
+select<-if(FOLLOWUP_RULE=="nominal")is.finite(primary$p)&primary$p<.05 else
+  is.finite(primary$q_all_milk)&primary$q_all_milk<.05
+associations<-take_rows(primary,select)
+associations$association_id<-sprintf("A%03d",seq_len(nrow(associations)))
+associations$evidence<-ifelse(is.finite(associations$q_all_milk)&associations$q_all_milk<.05,
+                            "FDR-supported association","Nominal association")
+write_csv(effects,"01_all_associations_and_sensitivities")
+write_csv(primary,"02_primary_all_milk_tests")
+write_csv(associations,"03_followup_associations")
+write_csv(filtering,"04_complete_subset_filtering")
+write_csv(eligibility,"05_eligible_samples_PRIVATE")
+write_csv(analysis_status,"06_analysis_status")
+write_csv(rbind(ma$qc,mi$qc),"07_raw_count_QC_PRIVATE")
+knitr::kable(analysis_status,caption="Eligible subsets; one-month maternal and infant stool, analysed separately")
+```
+
+**Inference:** all retained genera are tested before selecting the network.
+`q_endpoint` corrects taxa within one arsenic endpoint and population; `q_group`
+corrects all six endpoints in one population; `q_all_milk` corrects all tested
+milk–genus links in both populations. Each pseudocount and raw-RA sensitivity has
+its own complete family. The old module also tested urine, so its module-wide
+q-values are not interchangeable with this explicitly milk-only family. All
+analyses are exploratory, unadjusted Spearman associations. Bootstrap intervals
+are pointwise and conditional on the fixed eligible set, retained taxa and CLR.
+
+# Reviewed sequence-query snapshot (not a frozen genome inventory)
+
+```{r reviewed-query-snapshot, include=FALSE}
+snapshot_table <- function(lines) {
+  read.delim(text=paste(lines,collapse="\n"),sep="\t",quote="",comment.char="",
+    colClasses="character",check.names=FALSE,stringsAsFactors=FALSE)
+}
+MARKERS <- snapshot_table(c(
+  "gene\tprocess\tgroup",
+  "arsM\tArsenic methylation\tMethylation",
+  "aioA\tArsenite oxidation\tOxidation",
+  "aioB\tArsenite oxidation\tOxidation",
+  "arrA\tRespiratory arsenate reduction\tRespiratory reduction",
+  "arrB\tRespiratory arsenate reduction\tRespiratory reduction",
+  "arxA\tArsenic redox\tRedox",
+  "arxB\tArsenic redox\tRedox",
+  "arsC\tCytoplasmic arsenate reduction\tReduction",
+  "arsA\tArsenite efflux ATPase\tEfflux",
+  "arsB\tArsenite efflux\tEfflux",
+  "acr3\tArsenite efflux\tEfflux",
+  "arsD\tChaperone/efflux support\tEfflux",
+  "arsP\tOrganoarsenical efflux\tEfflux",
+  "arsK\tArsenite efflux\tEfflux",
+  "arsH\tOrganoarsenical detoxification\tDetoxification",
+  "arsI\tC\u2013As bond cleavage\tDetoxification",
+  "arsR\tArsenic-response regulation\tRegulation",
+  "arsN\tOrganoarsenical resistance\tResistance"
+))
+QUERY_SOURCES <- snapshot_table(c(
+  "gene\trecords\tusable_sequences\traw_file_md5\tsnapshot_date",
+  "arsM\t3\t3\td0ca352b173fff1d2b4aa0dde84d7ba3\t2026-10-27",
+  "aioA\t2\t2\t4a8c2718bac6cebd20efdc6cb329864e\t2026-10-27",
+  "aioB\t2\t2\td43ed650ff802edeae38fdd361c48dac\t2026-10-27",
+  "arrA\t2\t2\tefee9d10d933f6ba60681840b3f7708e\t2026-10-27",
+  "arrB\t2\t1\taa70d032709d97b0167e99b344dabaad\t2026-10-27",
+  "arxA\t0\t0\t5b156dbc824708cf1cc5a5f1e39687c2\t2026-10-27",
+  "arxB\t0\t0\t5b156dbc824708cf1cc5a5f1e39687c2\t2026-10-27",
+  "arsC\t43\t43\t83ee90db676a21d28de0cd7f3b5db795\t2026-10-27",
+  "arsA\t3\t3\tfe11e5b1cf17be36a497beea7cb3539b\t2026-10-27",
+  "arsB\t17\t17\t435f225f1d95fe4a758c75c307458451\t2026-10-27",
+  "acr3\t2\t2\t9e5272eaf69e112c974a5aa9c957c5ee\t2026-10-27",
+  "arsD\t2\t2\t7d9a475fb12a70439b991d17d6bde151\t2026-10-27",
+  "arsP\t0\t0\t5b156dbc824708cf1cc5a5f1e39687c2\t2026-10-27",
+  "arsK\t0\t0\t5b156dbc824708cf1cc5a5f1e39687c2\t2026-10-27",
+  "arsH\t4\t4\tcde080e4849a5c2c281694d83d79039f\t2026-10-27",
+  "arsI\t2\t2\tcae70caebda5e28e1deb728c604687f6\t2026-10-27",
+  "arsR\t7\t7\t25b22f1ccdf784933fb9c8233987580f\t2026-10-27",
+  "arsN\t0\t0\t5b156dbc824708cf1cc5a5f1e39687c2\t2026-10-27"
+))
+QUERY_PROTEINS <- snapshot_table(c(
+  "query_id\tgene\taccession\torganism\tprotein_name\tsequence",
+  "Q00001\tarsM\tA0A0D3MJQ5\tClostridium sp\tArsenite methyltransferase (EC 2.1.1.137)\tMDNIREGVRQKYAFAIANRGQGCCGSPGCCSDGLSDAADPITGNLYDESDLQGLDPELIANSFGCGNPTALMNLNLGEVVLDLGSGSGLDVLLSAKRVGPTGKAYGLDMTDEMLAVAKENQRKSGIENAEFLKGHIEEIPLAAKSIDVIISNCVINLSGDKDKVLKEAYRVLKPQGRFAVSDIVIKRPLPEKIRDNILAWAGCIAGAMTEEEYRGKLSRAGFENISLQVTREYNLEDPSLRGMLEDLTDGEIKEFQGAMVSCFIRAAKPA",
+  "Q00002\tarsM\tU2ZU49\tAquipseudomonas alcaligenes (strain ATCC 14909 / DSM 50342 / CCUG 1425 / JCM 20561 / NBRC 14159 / NCIMB 9945 / NCTC 10367 / 1577) (Pseudomonas alcaligenes)\tArsenite methyltransferase (EC 2.1.1.137)\tMHESVQNYYGKVLQNSSDLKTSACCDASSMPAWLKPLLSQVHPEVSARYYGCGLVAPALLDGCQVLDLGSGSGRDCYVLAQLVGASGSVLGVDMTAEQLAVANAHLDYHAERFGFANVSFRHGYIEDLASLELADGSFDVIVSNCVINLSPDKDSVLREAYRLLKPGGELYFSDVYADRRLADELRQDEVLYGECLGGALYWNDFEHLARRHGFTDPRLVEDQPISITDSALAEKLGDARFYSATYRLFKLDGLEPACEDYGQAVIYRGSIPGAAHAFVLDKHHRIETGRVFPVCGNTWRMLQDTRFAPHFQFIGDFSRHFGLFEGCGGGLPYDRQAAVTAATSCC",
+  "Q00003\tarsM\tQ6N3Y0\tRhodopseudomonas palustris (strain ATCC BAA-98 / CGA009)\tArsenite methyltransferase (EC 2.1.1.137) (As(III) AdoMet methyltransferase)\tMPTDMQDVKDIVREKYASAALKVATGGASCCGSSALPGASPITSNLYDAAQEQGLPAEAMLASLGCGNPTALAQLSPGETVLDLGSGGGIDVLLSARRVGPTGKAYGLDMTDEMLALARDNQRKAGLDNVEFLKGEIEAIPLPDHSVDVIISNCVINLSGDKDRVLREAFRVLKPGGRFAVSDVVTRGEIPEALRRDVLLWVGCLAGALDEADYVAKLAAAGFAQISIEPTRVYDIEDAREFLTGKGIDVDALAPQMQDKFFSGFVRATKPGADGEVPARCCG",
+  "Q00004\taioA\tQ7SIF4\tAlcaligenes faecalis\tArsenite oxidase subunit AioA (AOI) (EC 1.20.9.1) (Arsenite oxidase Mo-pterin subunit)\tMSRPNDRITLPPANAQRTNMTCHFCIVGCGYHVYKWPELQEGGRAPEQNALGLDFRKQLPPLAVTLTPAMTNVVTEHNGRRYNIMVVPDKACVVNSGLSSTRGGKMASYMYTPTGDGKQRLKAPRLYAADQWVDTTWDHAMALYAGLIKKTLDKDGPQGVFFSCFDHGGAGGGFENTWGTGKLMFSAIQTPMVRIHNRPAYNSECHATREMGIGELNNAYEDAQLADVIWSIGNNPYESQTNYFLNHWLPNLQGATTSKKKERFPNENFPQARIIFVDPRETPSVAIARHVAGNDRVLHLAIEPGTDTALFNGLFTYVVEQGWIDKPFIEAHTKGFDDAVKTNRLSLDECSNITGVPVDMLKRAAEWSYKPKASGQAPRTMHAYEKGIIWGNDNYVIQSALLDLVIATHNVGRRGTGCVRMGGHQEGYTRPPYPGDKKIYIDQELIKGKGRIMTWWGCNNFQTSNNAQALREAILQRSAIVKQAMQKARGATTEEMVDVIYEATQNGGLFVTSINLYPTKLAEAAHLMLPAAHPGEMNLTSMNGERRIRLSEKFMDPPGTAMADCLIAARIANALRDMYQKDGKAEMAAQFEGFDWKTEEDAFNDGFRRAGQPGAPAIDSQGGSTGHLVTYDRLRKSGNNGVQLPVVSWDESKGLVGTEMLYTEGKFDTDDGKAHFKPAPWNGLPATVQQQKDKYRFWLNNGRNNEVWQTAYHDQYNSLMQERYPMAYIEMNPDDCKQLDVTGGDIVEVYNDFGSTFAMVYPVAEIKRGQTFMLFGYVNGIQGDVTTDWTDRNIIPYYKGTWGDIRKVGSMEEFKRTVSFKSRRFA",
+  "Q00005\taioA\tQ8GGJ6\tHerminiimonas arsenicoxydans\tArsenite oxidase subunit AioA (EC 1.20.9.1) (Arsenite oxidase Mo-pterin subunit)\tMSKNRDRVALPPVNAQKTNMTCHFCIVGCGYHVYKWDENKEGGRAANQNALGLDFTKQLPPFATTLTPAMTNVITAKNGKRSNIMIIPDKECVVNQGLSSTRGGKMAGYMYAADGMTADRLKYPRFYAGDQWLDTSWDHAMAIYAGLTKKILDQGNVRDIMFATFDHGGAGGGFENTWGSGKLMFSAIQTPTVRIHNRPAYNSECHATREMGIGELNNSYEDAQVADVIWSIGNNPYETQTNYFLNHWLPNLNGSTEEKKKQWFAGEPVGPGLMIFVDPRRTTSIAIAEQTAKDRVLHLDINPGTDVALFNGLLTYVVQQGWIAKEFIAQHTVGFEDAVKTNQMSLADCSRITGVSEDKLRQAAEWSYKPKAAGKMPRTMHAYEKGIIWGNDNYNIQSSLLDLVIATQNVGRRGTGCVRMGGHQEGYVRPPHPTGEKIYVDQEIIQGKGRMMTWWGCNNFQTSNNAQALREVSLRRSQIVKDAMSKARGASAAEMVDIIYDATSKGGLFVTSINLYPTKLSEAAHLMLPAAHPGEMNLTSMNGERRMRLSEKFMDAPGDALPDCLIAAKAANTLKAMYEAEGKPEMVKRFSGFDWKTEEDAFNDGFRSAGQPGAEPIDSQGGSTGVLATYTLLRAAGTNGVQLPIKRVENGKMIGTAIHYDDNKFDTKDGKAHFKPAPWNGLPKPVEEQKAKHKFWLNNGRANEVWQSAYHDQYNDFVKSRYPLAYIELNPGDAQSLGVAAGDVVEVFNDYGSTFAMAYPVKDMKPSHTFMLFGYVNGIQGDVTTDWVDRNIIPYYKGTWGSVRRIGSIEQYKKTVSTKRRAFDNV",
+  "Q00006\taioB\tQ7SIF3\tAlcaligenes faecalis\tArsenite oxidase subunit AioB (AOII) (EC 1.20.9.1) (Arsenite oxidase Rieske subunit)\tMSDTINLTRRGFLKVSGSGVAVAATLSPIASANAQKAPADAGRTTLQYPATQVSVAKNLKANEPVSFTYPDTSSPCVAVKLGSPVPGGVGPNNDIVAYSVLCTHMGCPTSYDKSSKTFKCPCHFTEFDAEKAGQMICGQATENLPRVLLRYDEASDALTAVGVDGLIYGRQANVI",
+  "Q00007\taioB\tQ8GGJ7\tHerminiimonas arsenicoxydans\tArsenite oxidase subunit AioB (EC 1.20.9.1) (Arsenite oxidase Rieske subunit)\tMEHQTSRRNFLKIAGSSAAVAGAGLVSGNANAAPAKVNVGASTLPYPITAVGKAKGLKVDAPVSFNYPDASSPCVAIKMGQPTPGGVGPNNDIVAHSILCTHMGCPVSYDASAKTFKCPCHFSVFDPDNHGQMVCGQATENLPQIQLSYNAANDTFTAIGVTGLIYGRQSNIL",
+  "Q00008\tarrA\tQ5Y818\tChrysiogenes arsenatis\tArsenate respiratory reductase molybdopterin-containing subunit ArrA (EC 1.20.99.1) (Arsenate respiratory reductase large subunit) (ARR large subunit)\tMRIKRREFLKASAAVGAVAVASPTLNAFAQTGTGASAMGEAEGKWIPSTCQGCTTWCPVEFLFRMAVRSKYAATQLSKANNGYCCVRGHLMLQQLYDPDRIKTPMKRTNPVKGRKEDPKICPYHMGMKQWDTIADKIMELRKNNETHKYLLMRGRYSDHNSIFYGDLTKMIGSPNNISHSAICAEVEKMGSMATEGFWGYRDYDLDNMKYLIAWACDPLSSNRQIPNAIRKIQGVMDRGKVVAVDPRMNNTASKAQEWLPIKPSEDGALALAMAHVIITKGLWSKEFVGDFKDGKNKFVAGKTVKEEDFEEKLTNGIVKWWNLEVKDRTPKWAAKVTGIDEATIIRVATEFAQAAPACAIWYGPNMQPRGSYAVMCIHALNGLVGASDSEGGLCTGMGSPSSSYPKIDAYQDDVAKAGAKNKKIDQRGTLKFPAMGSAKPGTGVVTNNVADALLAADPYDIKVAIGYFCNFNFSGTDGARWDKALAKVPFFVHCVPMFSEMTYFADIVLPAALHHTEDWAVIRSKANLHGHTSIQQPVVERMFDVKGVETEITWLLAEKLKAKGFENMYNWLYNEYKDPETGKNPTNSLEFALYATKIRSKKCWDPKENAEYKGDKLNGWADFMEKGIVNSPKFKFRQKWEKGFPTETKKFEFYSETLKKGLLAHAEKNKVTVDQVMEATNYEARGELAFIPHYESPKRHGDVKEFPFSLIDMKSRLNREGRSTNATWYHAFKKCDPGDVNQEDVLQINPADAKKLGINEGDMVKVTSVIGSLTVKARLWEGVRPGCVAKCYGQGHFAMGRVSAKDFGKAVARGANFNDIMPADYDRITGATARNGGFTGVKIEKA",
+  "Q00009\tarrA\tQ7WTU0\tShewanella sp. (strain ANA-3)\tArsenate respiratory reductase molybdopterin-containing subunit ArrA (EC 1.20.99.1) (Arsenate respiratory reductase large subunit) (ARR large subunit)\tMKKENQVNLGRRQLLKSTAAGTVLTGIGGTLSFTPIVEGIAAELPAPLRRTGVGEWLATTCQGCTSWCAKQIYVMDGRALKVRGNPNSGVHGMSSCPRQHLSLQQVYDPDRLRTPMMRTNPKKGRDQDPKFVPISWDKALDMLADKIIALRVANEPHKYALLRGRYSHINDLLYKKMTNLIGSPNNISHSSVCAEAHKMGPYYLDGNWGYNQYDVKNAKFILSFGADPIASNRQVSFYSQTWGDSLDHAKVVVVDPRLSASAAKAHKWIPIEPGQDSVLALAIAHVALVEGVWHKPFVGDFIEGKNLFKAGKTVSVESFKETHTYGLVEWWNQALKDYTPEWASKITGIDPKTIIAIAKDMGAAAPAVQVWTSRGAVMQARGTYTSISCHALNGLFGGIDSKGGLFPGNKTPLLKEYPEAKAYMDEIAAKGVKKEKIDQRGRLEFPALAKGKSGGGVITANAANGIRNQDPYEIKVMLAYFNNFNFSNPEGQRWDEALSKVDFMAHITTNVSEFSWFADVLLPSSHHMFEKWGVLDSIGNGVAQISIQQPSIKRLWDTRIDESEIPYMLAKKLADKGFDAPWRYINEQIVDPETGKPAADEAEFAKLMVRYLTAPLWKEDASKYGDKLSSWDEFVQKGVWNSSPYKLEARWGKFKTETTKFEFYSKTLEKALQSHADKHKVSIDEVMKACDYQARGHLAFIPHYEEPYRFGDESEFPLLLVDQKSRLNKEGRTANSPWYYEFKDVDPGDVANEDVAKFNPIDGKKFGLKDGDEIRITSPVGMLTCKAKLWEGVRPGTVAKCFGQGHWAYGRYASAKFGVTPRGGSNNDLIADRYDRLSGASAFYGHIRVRVEKV",
+  "Q00010\tarrB\tQ7WTT9\tShewanella sp. (strain ANA-3)\tArsenate respiratory reductase iron-sulfur subunit ArrB (Arsenate respiratory reductase small subunit) (ARR small subunit)\tMRLGMVIDLQKCVGCGGCSLACKTENNTNDGIHWSHHIATTEGTFPDVKYTYIPTLCNHCDDAPCVKVCPTGAMHKDKRGLTLQNNDECIGCKKCMNACPYGVISFNAATPHRRWQDDSEVVANGTVSPLMLLKRTGATATPNENPERGDTYPMIRPKRTTEKCTFCDHRLDKGLNPACVDACPSEARVIGDLDDPQSKVSQLIKLHKPMQLKPEAGTGPRVFYIRSFGVKTAY",
+  "Q00011\tarsC\tP08692\tEscherichia coli\tArsenate reductase (EC 1.20.4.1) (Arsenical pump modifier)\tMSNITIYHNPACGTSRNTLEMIRNSGTEPTIILYLENPPSRDELVKLIADMGISVRALLRKNVEPYEQLGLAEDKFTDDQLIDFMLQHPILINRPIVVTPLGTRLCRPSEVVLDILQDAQKGAFTKEDGEKVVDEAGKRLK",
+  "Q00012\tarsC\tP0A006\tStaphylococcus aureus\tArsenate reductase (EC 1.20.4.4) (Arsenical pump modifier) (Protein ArsC)\tMDKKTIYFICTGNSCRSQMAEGWGKEILGEGWNVYSAGIETHGVNPKAIEAMKEVDIDISNHTSDLIDNDILKQSDLVVTLCSDADNNCPILPPNVKKEHWGFDDPAGKEWSEFQRVRDEIKLAIEKFKLR",
+  "Q00013\tarsC\tP45947\tBacillus subtilis (strain 168)\tArsenate reductase (EC 1.20.4.4) (Arsenical pump modifier) (Protein ArsC)\tMENKIIYFLCTGNSCRSQMAEGWAKQYLGDEWKVYSAGIEAHGLNPNAVKAMKEVGIDISNQTSDIIDSDILNNADLVVTLCGDAADKCPMTPPHVKREHWGFDDPARAQGTEEEKWAFFQRVRDEIGNRLKEFAETGK",
+  "Q00014\tarsC\tP74313\tSynechocystis sp. (strain ATCC 27184 / PCC 6803 / Kazusa)\tGlutaredoxin arsenate reductase (EC 1.20.4.1) (Low molecular weight protein-tyrosine-phosphatase) (EC 3.1.3.48) (Protein ArsC) (SynArsC) (rSynArsC)\tMKKVMFVCKRNSCRSQMAEGFAKTLGAGKIAVTSCGLESSRVHPTAIAMMEEVGIDISGQTSDPIENFNADDYDVVISLCGCGVNLPPEWVTQEIFEDWQLEDPDGQSLEVFRTVRGQVKERVENLIAKIS",
+  "Q00015\tarsC\tP0AB96\tEscherichia coli (strain K12)\tArsenate reductase (EC 1.20.4.1) (Arsenical pump modifier)\tMSNITIYHNPACGTSRNTLEMIRNSGTEPTIIHYLETPPTRDELVKLIADMGISVRALLRKNVEPYEELGLAEDKFTDDRLIDFMLQHPILINRPIVVTPLGTRLCRPSEVVLEILPDAQKGAFSKEDGEKVVDEAGKRLK",
+  "Q00016\tarsC\tQ92R44\tRhizobium meliloti (strain 1021) (Ensifer meliloti) (Sinorhizobium meliloti)\tArsenate reductase (EC 1.20.4.1)\tMTVTIYHNPACGTSRNTLAMIRNAGIEPTVVEYLKNPPSRAELEAMIAAAGLTVRQAIREKGTPFAELGLGDPSRSDEELLDAMLEHPILINRPFVVAPLGTRLCRPSEVVLDILPDTHKGPFSKEDGEAVLDAGGKRIV",
+  "Q00017\tarsC\tA4INR2\tGeobacillus thermodenitrificans (strain NG80-2)\tArsenate reductase (EC 1.20.4.4)\tMKNKKIIYFLCTGNSCRSQMAEGWAKKYLGDDWEVYSAGIEAHGLNPNAVKVMKEVGIDISNQTSDVIDPEILNKADLVVTLCGHAADHCPVTPPNVKRVHWGFDDPAKAEGTEEEKLAVFRRVRDEIGARIKKFAETGE",
+  "Q00018\tarsC\tA6QHV6\tStaphylococcus aureus (strain Newman)\tArsenate reductase (EC 1.20.4.4)\tMTKKTIYFICTGNSCRSQMAEGWAKQILADDWNVYSAGIETHGVNPKAIEAMKEVGIDISNHTSDLIDNNIIKNSNLVVTLCSDADVNCPSLPTNVKKEHWGFDDPAGKPWSEFQRVRDEIKIAIENFKSR",
+  "Q00019\tarsC\tA7GP55\tBacillus cytotoxicus (strain DSM 22905 / CIP 110041 / 391-98 / NVH 391-98)\tArsenate reductase (EC 1.20.4.4)\tMENKKIIYFLCTGNSCRSQMAEAWGKEYLGDKWNVLSAGIEAHGVNPNAVKAMKEVDIDITDQTSDIIDRDILDKADLVVTLCGHANDVCPTTPPHVKRVHWGFDDPAGQEWSVFQRVRDEIGARIKKFAETGE",
+  "Q00020\tarsC\tA8Z4K0\tStaphylococcus aureus (strain USA300 / TCH1516)\tArsenate reductase (EC 1.20.4.4)\tMTKKTIYFICTGNSCRSQMAEGWAKQILADDWNVYSAGIETHGVNPKAIEAMKEVGIDISNHTSDLIDNNIIKNSNLVVTLCSDADVNCPSLPTNVKKEHWGFDDPAGKPWSEFQRVRDEIKIAIENFKSR",
+  "Q00021\tarsC\tB7HWU2\tBacillus cereus (strain AH187)\tArsenate reductase (EC 1.20.4.4)\tMENKKTIYFLCTGNSCRSQMAEAWGKKYLGDNWNVYSAGIEAHGVNPNAIKAMNEVNIDITNQTSDIIDANILNRADLVVTLCSHADSVCPSTPPDVNRVHWGFDDPAGKEWSEFQRVRDEIGERIKRFSETGE",
+  "Q00022\tarsC\tB7INE4\tBacillus cereus (strain G9842)\tArsenate reductase (EC 1.20.4.4)\tMENKKTIYFLCTGNSCRSQMAEAWGKQFLEDKWNVYSAGIEAHGVNPNAIKAMNEVNIDITNQTSDIIDATILNSADLVVTLCSHADAVCPSTPPHVNRVHWGFDDPAGKEWSEFQRVRDEIGEHIKRFSETGE",
+  "Q00023\tarsC\tB9E7M5\tMacrococcoides caseolyticum (strain JCSC5402) (Macrococcus caseolyticus)\tArsenate reductase (EC 1.20.4.4)\tMEKKTLYFICTGNSCRSQMAEGWGKHILGDTWNVYSAGIETHGVNPKAIEAMREVGIDISHHTSDLIDQDILNNSDLVVTLCSDADNNCPILPPNVKKEHWGFDDPAGKAWSEFQRVRDEIGHAIEQFKLR",
+  "Q00024\tarsC\tB9IRF0\tBacillus cereus (strain Q1)\tArsenate reductase (EC 1.20.4.4)\tMENKKTIYFLCTGNSCRSQMAEAWGKQYLGDKWNVYSAGIEAHGVNPNAIKAMNEVNIDITNQTSDIIDANILNRADLVVTLCSHADAVCPSTPPDVHRVHWGFDDPAGKEWSEFQRVRDEIGERIKRFSETGE",
+  "Q00025\tarsC\tC0ZEV2\tBrevibacillus brevis (strain 47 / JCM 6285 / NBRC 100599)\tArsenate reductase (EC 1.20.4.4)\tMENKKTIYFLCTGNSCRSQMAEAWGKKYLGNAWNVFSAGIEAHGVNPNAVRAMKEVGIDISDQTSDVIDSDILNKADLIVTLCSHADSVCPTTPTHVNRVHWGFDDPAGKEWPEFQRVRDEIGARIKKFAETGE",
+  "Q00026\tarsC\tC1F0A7\tBacillus cereus (strain 03BB102)\tArsenate reductase (EC 1.20.4.4)\tMENKKTIYFLCTGNSCRSQMAEAWGKQYLGDKWNVYSAGIEAHGVNPNAIKAMNEVNIDITNQTSDMIDINILNNADLVVTLCSHADSVCPSTPPHVNRVHWGFDDPAGKEWSEFQRVRDEIRERIKRFSEIGE",
+  "Q00027\tarsC\tC3LDK1\tBacillus anthracis (strain CDC 684 / NRRL 3495)\tArsenate reductase (EC 1.20.4.4)\tMENKKTIYFLCTGNSCRSQMAEAWGKQYLGDKWNVYSAGIEAHGVNPNAIKAMNEVNIDITNQTSDIIDANILNRADLVVTLCSHADAVCPSTPPHVNRVHWGFDDPAGKEWPEFQRVRDEIGERIKRFSETGE",
+  "Q00028\tarsC\tC3P101\tBacillus anthracis (strain A0248)\tArsenate reductase (EC 1.20.4.4)\tMENKKTIYFLCTGNSCRSQMAEAWGKQYLGDKWNVYSAGIEAHGVNPNAIKAMNEVNIDITNQTSDIIDANILNRADLVVTLCSHADAVCPSTPPHVNRVHWGFDDPAGKEWPEFQRVRDEIGERIKRFSETGE",
+  "Q00029\tarsC\tO50595\tAcidiphilium multivorum (strain DSM 11245 / JCM 8867 / NBRC 100883 / AIU 301)\tArsenate reductase (EC 1.20.4.1) (Arsenical pump modifier)\tMSNITIYHNPACGTSRNTLEMIRNSGNEPTVIHYLENPPSRDELVKLIADMGISVRALLRKNVEPYEELGLEEDKFTDDQLIDFMLQHPILINRPIVVTPLGTRLCRPSEVVLDILPDAQKGAFAKEDGEKVVDEAGKRLK",
+  "Q00030\tarsC\tP0A005\tStaphylococcus aureus (strain N315)\tArsenate reductase (EC 1.20.4.4)\tMDKKTIYFICTGNSCRSQMAEGWGKEILGEGWNVYSAGIETHGVNPKAIEAMKEVDIDISNHTSDLIDNDILKQSDLVVTLCSDADNNCPILPPNVKKEHWGFDDPAGKEWSEFQRVRDEIKLAIEKFKLR",
+  "Q00031\tarsC\tP0AB97\tShigella flexneri\tArsenate reductase (EC 1.20.4.1) (Arsenical pump modifier)\tMSNITIYHNPACGTSRNTLEMIRNSGTEPTIIHYLETPPTRDELVKLIADMGISVRALLRKNVEPYEELGLAEDKFTDDRLIDFMLQHPILINRPIVVTPLGTRLCRPSEVVLEILPDAQKGAFSKEDGEKVVDEAGKRLK",
+  "Q00032\tarsC\tP44589\tHaemophilus influenzae (strain ATCC 51907 / DSM 11121 / KW20 / Rd)\tArsenate reductase (EC 1.20.4.1)\tMSVIIYHNPHCSKSRETLALLENKGIQPIIELYLQKQYSVNELQSIAKKLGIDDVRQMMRTKDELYKSLNLDNLDLSQAELFKAISEHSALIERPIVINGDKAKIGRPPETVLEIL",
+  "Q00033\tarsC\tP52147\tEscherichia coli\tArsenate reductase (EC 1.20.4.1) (Arsenical pump modifier)\tMSNITIYHNPHCGTSRNTLEMIRNSGIEPTVILYLETPPSRDELLKLIADMGISVRALLRKNVEPYEELGLAEDKFTDDQLIDFMLQHPILINRPIVVTPLGTKLCRPSEVVLDILPDAQKAAFTKEDGEKVVDDSGKRLK",
+  "Q00034\tarsC\tP63621\tNeisseria meningitidis serogroup A / serotype 4A (strain DSM 15465 / Z2491)\tArsenate reductase (EC 1.20.4.1)\tMPEIKIFHNPRCSKSRAALSLLEERGIAAEVVKYLDTPPDLSELKDIFNKLGLASARGMMRVKDDLYKELGLDNPNLDNDALLRAIADHPALLERPIVLANGKAAVGRPLENIEAVL",
+  "Q00035\tarsC\tP63622\tNeisseria meningitidis serogroup B (strain ATCC BAA-335 / MC58)\tArsenate reductase (EC 1.20.4.1)\tMPEIKIFHNPRCSKSRAALSLLEERGIAAEVVKYLDTPPDLSELKDIFNKLGLASARGMMRVKDDLYKELGLDNPNLDNDALLRAIADHPALLERPIVLANGKAAVGRPLENIEAVL",
+  "Q00036\tarsC\tP74984\tYersinia enterocolitica\tArsenate reductase (EC 1.20.4.1) (Arsenical pump modifier)\tMSNITIYHNPTCGTSRNTLEMIRNSGNEPTVIYYLETPPTHDELVKLIADMGITVRALLRKNVEPYEELGLAEGTFSDEQLIGFMLEHPILINRPIVVTPLGTRLCRPSEVVLDILPEPQQGAFTKEDGEKITDESGKRLK",
+  "Q00037\tarsC\tP95354\tNeisseria gonorrhoeae\tPutative arsenate reductase (EC 1.20.4.1)\tMSEIKIFHNPRCSKSRAAVSLLEERGIAAEAVKYLDTPPDLSELKDIFNKLGLESARGMMRVKDDLYKELGLDNPDLDNDALLRAIADHPALLERPIVLGKR",
+  "Q00038\tarsC\tQ01257\tStaphylococcus xylosus\tArsenate reductase (EC 1.20.4.4)\tMDKKTIYFICTGNSCRSQMAEGWGREILGEDWNVYSAGIETHGVNPKAIEAMKEVDIDISNHTSDLIDNHILKQSDLVVTLCSDADDNCPILPPNVKKEHWGLEDPAGKEWSEFQRVRDEIKLAIENFKLR",
+  "Q00039\tarsC\tQ2FFW6\tStaphylococcus aureus (strain USA300)\tArsenate reductase (EC 1.20.4.4)\tMTKKTIYFICTGNSCRSQMAEGWAKQILADDWNVYSAGIETHGVNPKAIEAMKEVGIDISNHTSDLIDNNIIKNSNLVVTLCSDADVNCPSLPTNVKKEHWGFDDPAGKPWSEFQRVRDEIKIAIENFKSR",
+  "Q00040\tarsC\tQ2FXF5\tStaphylococcus aureus (strain NCTC 8325 / PS 47)\tArsenate reductase (EC 1.20.4.4)\tMTKKTIYFICTGNSCRSQMAEGWAKQILADDWNVYSAGIETHGVNPKAIEAMKEVGIDISNHTSDLIDNNIIKNSNLVVTLCSDADVNCPSLPTNVKKEHWGFDDPAGKPWSEFQRVRDEIKIAIENFKSR",
+  "Q00041\tarsC\tQ2YTL3\tStaphylococcus aureus (strain bovine RF122 / ET3-1)\tArsenate reductase (EC 1.20.4.4)\tMTKKTIYFICTGNSCRSQMAEGWAKQILAEDWNVYSAGIETHGVNPKAIEAMKEVGIDISNHTSDLIDNNIIKNSNLVVTLCSDADVNCPSLPANVKKEHWGFDNPAGKPWSEFQRVRDEIKIAIENFKSR",
+  "Q00042\tarsC\tQ5HF01\tStaphylococcus aureus (strain COL)\tArsenate reductase (EC 1.20.4.4)\tMTKKTIYFICTGNSCRSQMAEGWAKQILADDWNVYSAGIETHGVNPKAIEAMKEVGIDISNHTSDLIDNNIIKNSNLVVTLCSDADVNCPSLPTNVKKEHWGFDDPAGKPWSEFQRVRDEIKIAIENFKSR",
+  "Q00043\tarsC\tQ5WJS9\tShouchella clausii (strain KSM-K16) (Alkalihalobacillus clausii)\tArsenate reductase (EC 1.20.4.4)\tMSKKIIYFLCTGNSCRSQMAEGFGKHYLSDEWEVYSAGMEAHGLNPNAVKAMNEVGIDISDQTSDLIHIDLLNNADFVVTLCGDAADKCPLTPAHVKREHWGFDDPAKAEGTKEERWMVFQRVRDEIGARIKKFAETGE",
+  "Q00044\tarsC\tQ639D2\tBacillus cereus (strain ZK / E33L)\tArsenate reductase (EC 1.20.4.4)\tMENKKTIYFLCTGNSCRSQMAEAWGKQYLGDKWNVYSAGIEVHGVNPNAIKAMNEVNIDITNQTSDIIDANILNRADLVVTLCSHADSVCPSTPPDVNRVHWGFDDPAGKEWSEFQRVRDEIGERIKRFSETGE",
+  "Q00045\tarsC\tQ65IV4\tBacillus licheniformis (strain ATCC 14580 / DSM 13 / JCM 2505 / CCUG 7422 / NBRC 12200 / NCIMB 9375 / NCTC 10341 / NRRL NRS-1264 / Gibson 46)\tArsenate reductase (EC 1.20.4.4)\tMSKKTIYFLCTGNSCRSQMAEGWAKKHLGDEWNVYSAGIEAHGLNPNAVKAMREAGIDISEQTSDIIDPDILHNADLVITLCGDAADKCPMTPPHVKREHWGFDDPAKAEGTEEEKWAFFQRVRDEIGERIKRFAETGE",
+  "Q00046\tarsC\tQ6GIZ3\tStaphylococcus aureus (strain MRSA252)\tArsenate reductase (EC 1.20.4.4)\tMDKKTIYFICTGNSCRSQMAEGWGKEILGEGWNVYSAGIETHGVNPKAIEAMKEVDIDISNHTSDLIDNDILKQSDLVVTLCSDADNNCPILPPNVKKEHWGFDDPAGKEWSEFQRVRDEIKLAIEKFKLR",
+  "Q00047\tarsC\tQ6HGP0\tBacillus thuringiensis subsp. konkukian (strain 97-27)\tArsenate reductase (EC 1.20.4.4)\tMENKKTIYFLCTGNSCRSQMAEAWGKQYLGDKWNVYSAGIEAHGVNPNAIKAMNEVNIDITNQTSDIIDANILNRADLVVTLCSHADSVCPSTPPHVNRVHWGFDDPAGKEWSEFQRVRDEIGERIKCFSETGE",
+  "Q00048\tarsC\tQ81BK3\tBacillus cereus (strain ATCC 14579 / DSM 31 / CCUG 7414 / JCM 2152 / NBRC 15305 / NCIMB 9373 / NCTC 2599 / NRRL B-3711)\tArsenate reductase (EC 1.20.4.4)\tMENKKTIYFLCTGNSCRSQMAEAWGKQYLGDKWNVYSAGMEAHGVNPNAIKAMNEVNIDITNQTSDIIDANILNSADLVVTLCSHADSVCPSTPPHVNRVHWGFDDPAGKEWSEFQRVRDEIGERIKRFSKTGE",
+  "Q00049\tarsC\tQ81NJ6\tBacillus anthracis\tArsenate reductase (EC 1.20.4.4)\tMENKKTIYFLCTGNSCRSQMAEAWGKQYLGDKWNVYSAGIEAHGVNPNAIKAMNEVNIDITNQTSDIIDANILNRADLVVTLCSHADAVCPSTPPHVNRVHWGFDDPAGKEWPEFQRVRDEIGERIKRFSETGE",
+  "Q00050\tarsC\tQ8CQF5\tStaphylococcus epidermidis (strain ATCC 12228 / FDA PCI 1200)\tArsenate reductase (EC 1.20.4.4)\tMDKKTIYFICTGNSCRSQMAEGWGKKILGDEWQVYSGGIEAHGVNPKAIEAMKEVGIDISNHTSNLIDQNILHQSDLVVTLCSDADKNCPILPPSVKKEHWGFDDPAGKPWSEFQRVRDEIKTAIESFKTR",
+  "Q00051\tarsC\tQ8ENQ5\tOceanobacillus iheyensis (strain DSM 14371 / CIP 107618 / JCM 11309 / KCTC 3954 / HTE831)\tArsenate reductase (EC 1.20.4.4)\tMSKKIIYFLCTGNSCRSQMAEGWGKKILGEEWDVYSAGIEAHGLNPNAIKAMREVDIDITNQTSDQIDKDILNKADFVVTLCGDAKDKCPMTPPHVKRDHWGFEDPAKAQGTEEEKWTVFQQVRDKIGDRIKVFAKTGE",
+  "Q00052\tarsC\tQ8GJ74\tPriestia megaterium (strain DSM 319 / IMG 1521) (Bacillus megaterium)\tArsenate reductase (EC 1.20.4.4)\tMSKKTLYFLCTGNSCRSQMAEGWAKKYLNNNEWDVRSAGLEAHGLNPNAVKAMKEAGVDISNQTSDVIDPEILNNADLVVTLCGHAADHCPVTPPHVKREHWGFDDPAKAEGTDEEKWAFFQRVRDEIAERIQRFAETGK",
+  "Q00053\tarsC\tQ9K8K8\tHalalkalibacterium halodurans (strain ATCC BAA-125 / DSM 18197 / FERM 7344 / JCM 9153 / C-125) (Bacillus halodurans)\tArsenate reductase (EC 1.20.4.4)\tMNKKVIYFLCTGNSCRSQMAEGWGKKYLGDEWDVYSAGIEAHGVNPNAVKAMKEIGIDISEQTSDTIDQELLQKADLVVTLCGHAADVCPATPSNKERVHWGFDDPAKAEGTDEEKWAVFRRVRDEIGKRIKTFAETGK",
+  "Q00054\tarsA\tO50593\tAcidiphilium multivorum (strain DSM 11245 / JCM 8867 / NBRC 100883 / AIU 301)\tArsenical pump-driving ATPase (EC 7.3.2.7) (Arsenical resistance ATPase) (Arsenite-translocating ATPase) (Arsenite-transporting ATPase)\tMKLLQNIPPYLFFTGKGGVGKTSISCATAIHLAEQGKRVLLVSTDPASNVGQVFDLAIGNTIRPVTAVPGLSALEIDPQEAARQYRARIVDPIKGLLPDDVVNSISEQLSGACTTEIAAFDEFTGLLTDASLLTRFDHIIFDTAPTGHTIRLLQLPGAWSSFIESNPDGASCLGPMAGLEKQREQYAHAVEALSDPERTRLVLVARLQNSTLQEVARTHEELAEIGLKNQYLVINGVLPEAEAEHDALAAAIWQREQEALANLPAGLSELPTDTLLLQPVNMVGVSALKGLLATRSEALPLPVTNILYTPENLSLSGLVDDIARSEHGLIMLMGKGGVGKTTMAAAIAVRLADMGFDVHLTTSDPAAHLSTTLNGSLKNLQVSRINPHDETERYRQHVLETKGRDLDEAGKRLLEEDLRSPCTEEIAVFQAFSRVIREAGKRFVVMDTAPTGHTLLLLDATGAYHREIAKKMGSKGHFTTPMMQLQDPDRTKVLLVTLPETTPVLEAANLQADLERAGIHPWGWIINNSLSIADTRSPLLCQRAQQELPQIEAVKNQHADRIALVPVLASEPAGIEKLRELMS",
+  "Q00055\tarsA\tP08690\tEscherichia coli\tArsenical pump-driving ATPase (EC 7.3.2.7) (Arsenical resistance ATPase) (Arsenite-translocating ATPase) (Arsenite-transporting ATPase)\tMQFLQNIPPYLFFTGKGGVGKTSISCATAIRLAEQGKRVLLVSTDPASNVGQVFSQTIGITIQAIASVPGLSALEIDPQAAAQQYRARIVDPIKGVLPDDVVSSINEQLSGACTTEIAAFDEFTGLLTDASLLTRFDHIIFDTAPTGHTIRLLQLPGAWSSFIDSNPEGASCLGPMAGLEKQREQYAYAVEALSDPKRTRLVLVARLQKSTLQEVARTHLELAAIGLKNQYLVINGVLPKTEAANDTLAAAIWEREQEALANLPADLAGLPTDTLFLQPVNMVGVSALSRLLSTQPVASPSSDEYLQQRPDIPSLSALVDDIARNEHGLIMLMGKGGVGKTTMAAAIAVRLADMGFDVHLTTSDPAAHLSMTLNGSLNNLQVSRIDPHEETERYRQHVLETKGKELDEAGKRLLEEDLRSPCTEEIAVFQAFSRVIREAGKRFVVMDTAPTGHTLLLLDATGAYHREIAKKMGEKGHFTTPMMLLQDPERTKVLLVTLPETTPVLEAANLQADLERAGIHPWGWIINNSLSIADTRSPLLRMRAQQELPQIESVKRQHASRVALVPVLASEPTGIDKLKQLAG",
+  "Q00056\tarsA\tP52145\tEscherichia coli\tArsenical pump-driving ATPase (EC 7.3.2.7) (Arsenical resistance ATPase) (Arsenite-translocating ATPase) (Arsenite-transporting ATPase)\tMKFLENIPSYLFFTGKGGVGKTSISCATAIRLAELGKRVLLVSTDPASNVGQVFDQTIGNTIQPVTAVSGLSALEIDPQDAAQQYRARIVDPIIGLLPDDVVNSISEQLSGACTTEIAAFDEFTGLLTDASLLTRFDHIIFDTAPTGHTIRLLQLPGAWSSFIESNPDGASCLGPMAGLEKQREQYAHAVEALSDPERTRLVLVARLQKSTLQEVARTHDELSAIGLKNQYLVINGVLPASEEKRDALAAAIWQREQEALANLPAGLSDLPTDNLYLQPLNMVGVSALKGLLNEHAEITSLPEQSPQNKPENMSLSVLVDDIARSEHGLIMLMGKGGVGKTTMAAAIAVSLADKGFNVHLTTSDPAAHLSTTLNGSLKNLQVSRINPHDETERYRQHVLETKGRDLDEAGKRLLEEDLRSPCTEEIAVFQAFSRVIREAGKRFVVMDTAPTGHTLLLLDATGAYHREIARKMGDKGHFTTPMMQLQDQERTKVLLVTLPETTPVLEAANLQSDLERAGIHPWGWIINNSLWIAQTQSPLLCQRALQERPQIEVVKNQHASRIALVPVMAAEPTGIEKLRELVV",
+  "Q00057\tarsB\tP0AB93\tEscherichia coli (strain K12)\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMLLAGAIFVLTIVLVIWQPKGLGIGWSATLGAVLALVTGVVHPGDIPVVWNIVWNATAAFIAVIIISLLLDESGFFEWAALHVSRWGNGRGRLLFTWIVLLGAAVAALFANDGAALILTPIVIAMLLALGFSKGTTLAFVMAAGFIADTASLPLIVSNLVNIVSADFFGLGFREYASVMVPVDIAAIVATLVMLHLYFRKDIPQNYDMALLKSPAEAIKDPATFKTGWVVLLLLLVGFFVLEPLGIPVSAIAAVGALILFVVAKRGHAINTGKVLRGAPWQIVIFSLGMYLVVYGLRNAGLTEYLSGVLNVLADNGLWAATLGTGFLTAFLSSIMNNMPTVLVGALSIDGSTASGVIKEAMVYANVIGCDLGPKITPIGSLATLLWLHVLSQKNMTISWGYYFRTGIIMTLPVLFVTLAALALRLSFTL",
+  "Q00058\tarsB\tP45946\tBacillus subtilis (strain 168)\tArsenite resistance protein ArsB\tMKRLSFLDRYLTIWIFLAMALGIGLGFIFPSFVGGLNKLQVGTTSIPLAIGLVLMMYPPLAKVRYEEIGRVFKDIKVLILSLVQNWIIGPTLMFILAIIFLPDKPEYMIGLIMIGLARCIAMVIVWNDLSKGDTEYAAGLVAFNSIFQMLFFSVYAYIFVTVIPQWLGMEGAVVNITMAEVAKSVFIYLGVPFIAGMVTRYIFVKVKGKEWYEKVFIPKISPITLIALLFTIIVMFSLKGDVIVSLPLDVVRVAIPLLIYFVLMFFVSFFLGKKIGANYAVTTTLAFTAGSNNFELAIAVAVGVFGIHSGAAFAAVIGPLVEVPVMIALVKVALWFQRKYFGSHSM",
+  "Q00059\tarsB\tP08691\tEscherichia coli\tArsenical pump membrane protein\tMLLAGAIFILTIVLVIWQPKGLGIGWSATLGAVLALASGVIHIADIPVVWNIVWNATATFIAVIIISLLLDESGFFEWAALHVSRWGNGRGRLLFTYIVLLGAAVAALFANDGAALILTPIVIAMLLALGFSKSTTLAFVMAAGFISDTASLPLIVSNLVNIVSADFFKLGFTEYASVMVPVDIAAIIATLVMLHLFFRKDIPPTYELARLKEPAKAIKDPATFRTGWVVLLLLLVGFFVLEPMGIPVSAIAAVGAAVLFAVAKKGHGINTGKVLRGAPWQIVIFSLGMYLVIYGLRNAGLTDYLSDVLNELADKGLWAATLGTGFLTALLSSIMNNMPTVLIGALSIDGSTATGVIKEAMIYANVIGCDLGPKITPIGSLATLLWLHVLSQKNMTITWGYYFRTGIVMTLPVLFVTLAALALRLSVTL",
+  "Q00060\tarsB\tP0AB94\tEscherichia coli O157:H7\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMLLAGAIFVLTIVLVIWQPKGLGIGWSATLGAVLALVTGVVHPGDIPVVWNIVWNATAAFIAVIIISLLLDESGFFEWAALHVSRWGNGRGRLLFTWIVLLGAAVAALFANDGAALILTPIVIAMLLALGFSKGTTLAFVMAAGFIADTASLPLIVSNLVNIVSADFFGLGFREYASVMVPVDIAAIVATLVMLHLYFRKDIPQNYDMALLKSPAEAIKDPATFKTGWVVLLLLLVGFFVLEPLGIPVSAIAAVGALILFVVAKRGHAINTGKVLRGAPWQIVIFSLGMYLVVYGLRNAGLTEYLSGVLNVLADNGLWAATLGTGFLTAFLSSIMNNMPTVLVGALSIDGSTASGVIKEAMVYANVIGCDLGPKITPIGSLATLLWLHVLSQKNMTISWGYYFRTGIIMTLPVLFVTLAALALRLSFTL",
+  "Q00061\tarsB\tP0AB95\tShigella flexneri\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMLLAGAIFVLTIVLVIWQPKGLGIGWSATLGAVLALVTGVVHPGDIPVVWNIVWNATAAFIAVIIISLLLDESGFFEWAALHVSRWGNGRGRLLFTWIVLLGAAVAALFANDGAALILTPIVIAMLLALGFSKGTTLAFVMAAGFIADTASLPLIVSNLVNIVSADFFGLGFREYASVMVPVDIAAIVATLVMLHLYFRKDIPQNYDMALLKSPAEAIKDPATFKTGWVVLLLLLVGFFVLEPLGIPVSAIAAVGALILFVVAKRGHAINTGKVLRGAPWQIVIFSLGMYLVVYGLRNAGLTEYLSGVLNVLADNGLWAATLGTGFLTAFLSSIMNNMPTVLVGALSIDGSTASGVIKEAMVYANVIGCDLGPKITPIGSLATLLWLHVLSQKNMTISWGYYFRTGIIMTLPVLFVTLAALALRLSFTL",
+  "Q00062\tarsB\tP30329\tStaphylococcus aureus\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMTILAIVIFLLTLTFVIWQPKGLDIGITALIGAVVAIITGVVSLSDVLEVTGIVWNATLTFVAVILISLILDEIGFFEWSAIHMVKASNGNGLKMFVFIMLLGAIVAAFFANDGAALILTPIVLAMVRNLGFNQKVIFPFIIASGFIADTTSLPLIVSNLVNIVSADYFDIGFIEYFSRMIIPNIFSLIASILVLWLYFRKSIPKTFDTENLSDPKSAIKDSKLFKLSWIVLAVLLVGYLVSEFIQIPVSIIAGIIAFIFVILARKSKAVHTKQVIKGAPWNIVVFSIGMYLVVFGLKNVGITTILGDVLTNISNYGLFSSIMGMGFIAAFLSSIMNNMPTVLIDAIAIGQSSATGILKEGMVYANVIGSDLGPKITPIGSLATLLWLHVLTQKGVKISWGTYFKTGIIITIPVLFVTLLGLYLTLIIF",
+  "Q00063\tarsB\tP52146\tEscherichia coli\tArsenical pump membrane protein\tMLLAGAIFVLTIVLVIWQPKGLGIGWSATLGAVLALISGVVHIGDIPVVWNIVWNATATFIAVIIISLLLDESGFFEWAALHVSRWGNGRGRLLFTYIVLLGAAVAALFANDGAALILTPIVIAMLLALGFSKGTTLAFVMAAGFIADTASLPLIVSNLVNIVSADFFGLGFTEYASVMVPVDIAAIIATLVMLHLFFRKDIPPTYDLALLKAPAKAIKDLATFRTGWIVLILLLVGFFVLEPLGIPVSAIAAVGAVILFAVANRGHAINTGKVLRGAPWQIVIFSLGMYLVVYGLRNAGLTEYLSGVLNVLADKGLWAATFGTGFLTAFLSSIMNNMPTVLVGALSIDGSTATGVIKEAMIFANVIGCDLGPKITPIGSLATLLWLHVLSQKNMTITWGYYFRTGIVMTLPVLFVTLAALALRLSFTL",
+  "Q00064\tarsB\tP63619\tStaphylococcus aureus (strain Mu50 / ATCC 700699)\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMTTLATLIFLVTLLFVLWQPKGLDIGITALTGAFIAVITGVVSFSDVFEVTGIVWNATLTFVSVILISLILDKVGLFEWSAIHMLHASKGNGLKMFVYIILLGAIVAAFFANDGAALILTPIVLAMVKNIGFSKRAIFPFIIASGFIADTTSLPLIVSNLVNIISADYFHVGFVRYFSRMIIPNLFSLLASIIVLWLYFRKAIPKTFDDNNIKHPKDAINDLKLFKISWIVLVILLFGYLISEFTKIPVSIFTGIIAFIFLMLARKSNAVNIKQVIKGAPWNIVLFSIGMYIVVFGLRNAGITLILAKILEYISNYGLFSTILGMGFISAFLSSIMNNMPTVLIDAIAIGQSNVHGMLKEGLIYANVIGSDLGPKITPIGSLATLLWLHVLTQKDVKISWGTYFKTGIIITIPVLFITLIGLYLTLIIF",
+  "Q00065\tarsB\tP63620\tStaphylococcus aureus (strain N315)\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMTTLATLIFLVTLLFVLWQPKGLDIGITALTGAFIAVITGVVSFSDVFEVTGIVWNATLTFVSVILISLILDKVGLFEWSAIHMLHASKGNGLKMFVYIILLGAIVAAFFANDGAALILTPIVLAMVKNIGFSKRAIFPFIIASGFIADTTSLPLIVSNLVNIISADYFHVGFVRYFSRMIIPNLFSLLASIIVLWLYFRKAIPKTFDDNNIKHPKDAINDLKLFKISWIVLVILLFGYLISEFTKIPVSIFTGIIAFIFLMLARKSNAVNIKQVIKGAPWNIVLFSIGMYIVVFGLRNAGITLILAKILEYISNYGLFSTILGMGFISAFLSSIMNNMPTVLIDAIAIGQSNVHGMLKEGLIYANVIGSDLGPKITPIGSLATLLWLHVLTQKDVKISWGTYFKTGIIITIPVLFITLIGLYLTLIIF",
+  "Q00066\tarsB\tP74985\tYersinia enterocolitica\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMLLAGSIFVLTLILAIWQPRGLSIGWSASICAALALVSGVIHVGDIPVVWNIVWNATATFIAVIIISLLLDESGFFEWAALHVSRWGNGRGRLLFTWIVLLGAAVAALFANDGAALILTPIVIAMLLALGFSKRTTLAFVMAAGFIADTASLPLIVSNLVNIVSADFFRLGFTEYASVMLPVDIAAIAATLGMLHLFFRRDIPATYDVSLLKMPASAIKDPATFRAGWIVLVLLLVGFFVLEPLGIPVSAIAAVGTVVLFAVAKKGHAINTGKVLRGAPWQIVVFSLGMYLVVYGLRNAGLTEYLSGVLNMLADKGLLAATFGTGFLTAFLSSVMNNMPTVLVGALSIDGSTASGVIKEAMIYANVIGCDLGPKITPIGSLATLLWLHVLSQKNMTISWGYYFRTGIIMTLPVLFVTLAALALRLSVTL",
+  "Q00067\tarsB\tQ01255\tStaphylococcus xylosus\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMTILAIVIFLLTLIFVIWQPKGLDIGITALIGAVVAIITGVVSFSDVLEVTGIVWNATLTFVAVILISLILDEIGFFEWSAIHMVKASNGNGLKMFVFIMLLGAIVAAFFANDGAALILTPIVLAMVRNLGFNKKVIFPFIIASGFIADTTSLPLIVSNLVNIVSADYFDIGFIEYFSRMIIPNIFSLIASILVLWLYFRKSIPKTFNTENLSDPKNVIKDPKLFKLSWIVLAILLVGYLVSEFIQIPVSIIAGIIALIFVILARKSKAVHTKQVIKGAPWNIVVFSIGMYLVVFGLKNVGITTILGDILTNISSYGLFSSIMGMGFIAAFLSSIMNNMPTVLIDAIAIGQSSATGILKEGMVYANVIGSDLGPKITPIGSLATLLWLHVLTQKGVKISWGTYFKTGIIITIPVLFVTLLGLYLTLIIF",
+  "Q00068\tarsB\tQ5HF02\tStaphylococcus aureus (strain COL)\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMTTLATLIFLVTLLFVLWQPKGLDIGITALTGAFIAVITGVVSFSDVFEVTGIVWNATLTFVSVILISLILDKVGLFEWSAIHMLHASKGNGLKMFVYIILLGAIVAAFFANDGAALILTPIVLAMVKNIGFSKRAIFPFIIASGFIADTTSLPLIVSNLVNIISADYFHVGFVRYFSRMIIPNLFSLLASIIVLWLYFRKAIPKTFDDNNIKHPKDAINDLKLFKISWIVLVILLFGYLISEFTKIPVSIFTGIIAFIFLMLARKSNAVNIKQVIKGAPWNIVLFSIGMYIVVFGLRNAGITLILAKILEYISNYGLFSTILGMGFISAFLSSIMNNMPTVLIDAIAIGQSNVHGMLKEGLIYANVIGSDLGPKITPIGSLATLLWLHVLTQKDVKISWGTYFKTGIIITIPVLFITLIGLYLTLIIF",
+  "Q00069\tarsB\tQ5HRI3\tStaphylococcus epidermidis (strain ATCC 35984 / DSM 28319 / BCRC 17069 / CCUG 31568 / BM 3577 / RP62A)\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMTTVLAIVIFFITLTLIIWQPKGLDIGISAIIGALLVIITGVVNFTDILEVIGIVWNATLTFVSVILISLILDEIGFFEWSAIHMVKASNGHGLKMFIYIMILGALIAAFFANDGAALILTPIVLAMIRNLGFNNKLVFPFIIACGFIADSTSLPLVVSNLVNIVSADYFGIKFVEYLMRMFIPNLFSLLASILVLWFYFRKSIPKTFDISSISEPKDAIRDTRLFKISWIILALLLIGYLVSEFIHIPVSFITGAIAVIFILLARQSNVVHTKQVIKGAPWNIVIFSIGMYLVIFGLKNVGMTLILADILSSIAQHGLFSSIMGMGFVSAFLSAIMNNMPTVLIDAIAIDQSHAISSIKEGMIYANVIGADLGPKITPIGSLATLLWLHVLVQKGVKISWGTYFKTGIVITIPVLFFTLLGLYLTLIIF",
+  "Q00070\tarsB\tQ6G8F6\tStaphylococcus aureus (strain MSSA476)\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMTTLATLIFLVTLLFVLWQPKGLDIGITALTGAFIAVITGVVSFSDVFEVTGIVWNATLTFVSVILISLILDKVGLFEWSAIHMLHASKGNGLKMFAYIILLGAIVAAFFANDGAALILTPIVLAMVKNIGFSKRAIFPFIIASGFIADTTSLPLIVSNLVNIISADYFHIGFIRYFSRMIIPNLFSLLASIIVLWLYFRKAIPKTFDDNNIKHPKDAINDLKLFKISWIVLVILLFGYLISEFTKIPVSIFTGIIAFIFLMLARKSNALNIKQVIKGAPWNIVLFSIGMYIVVFGLRNAGITLILAKILEYISNYGLFSTILGMGFISAFLSSIMNNMPTVLIDAIAIGQSNVHGMLKEGLIYANVIGSDLGPKITPIGSLATLLWLHVLTQKDVKISWGTYFKTGIIITIPVLFITLIGLYLTLIIF",
+  "Q00071\tarsB\tQ6GFT0\tStaphylococcus aureus (strain MRSA252)\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMTTLATFIFLVTLLFVLWQPKGLDIGFTALAGAFIAVITGVVSFSDVFEVTGIVWNATLTFVSVILISLILDKVGLFEWSAIHMLHASKGSGLKMFVYIILLGAVVAAFFANDGAALILTPIVLAMVKNIGFSKRAIFPFIIASGFIADTTSLPLIVSNLVNIISADYFNISFSQYLSRMIIPNLFSLLASLLVLWLYFRKAIPKSFDANHIKKPIDAINDLKLFKISWIVLVILLFGYLISEFTKIPVSIFTGIIAFIFLILARKSNAVNIKQVIKGAPWNIVLFSIGMYIVVFGLRNAGITLILAKILEYISNYGLFSTILGMGFISAFLSSIMNNMPTVLIDAIAIGQSNVHGMLKEGLIYANVIGSDLGPKITPIGSLATLLWLHVLTQKDVKISWGTYFKTGIIITIPVLFFTLLGLYLTLILF",
+  "Q00072\tarsB\tQ8CQF4\tStaphylococcus epidermidis (strain ATCC 12228 / FDA PCI 1200)\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMTILAITIFILTLIFVIWQPKGLDIGITALIGAVIAIITGVVSFSDVLEVTGIVWNATLTFVAVILISLILDEIGFFEWSAIHMVRASKGNGLKMFVYIMLLGAIVAAFFANDGAALILTPIVLAMVRSLGFDKKAVFPFIIASGFIADTTSLPLIVSNLVNIVSADYFDIGFVEYFSKMIIPNIFSLIASILVLWLYFRKSIPRKFDAVNIREPKEAIKDKKLFNISWIVLTVLLVGYLISEFINIPVSIIAGIIALIFVLLARKSKAVHTKQVIKGAPWNIVLFSIGMYLVVFGLKNVGITTLLSDVLTNISSYGLFSSIMGMGFISAFLSSIMNNMPTVLIDAIAIGQSQTTSILKEGMIYANVIGSDLGPKITPIGSLATLLWLHVLTQKGVKISWGQYFKIGIIITIPVLFITLLGLYLTLIIF",
+  "Q00073\tarsB\tQ8NW09\tStaphylococcus aureus (strain MW2)\tArsenical pump membrane protein (Arsenic efflux pump protein)\tMTTLATLIFLVTLLFVLWQPKGLDIGITALTGAFIAVITGVVSFSDVFEVTGIVWNATLTFVSVILISLILDKVGLFEWSAIHMLHASKGNGLKMFVYIILLGAIVAAFFANDGAALILTPIVLAMVKNIGFSKRAIFPFIIASGFIADTTSLPLIVSNLVNIISADYFHIGFIRYFSRMIIPNLFSLLASIIVLWLYFRKAIPKTFDDNNIKHPKDAINDLKLFKISWIVLVILLFGYLISEFTKIPVSIFTGIIAFIFLMLARKSNALNIKQVIKGAPWNIVLFSIGMYIVVFGLRNAGITLILAKILEYISNYGLFSTILGMGFISAFLSSIMNNMPTVLIDAIAIGQSNVHGMLKEGLIYANVIGSDLGPKITPIGSLATLLWLHVLTQKDVKISWGTYFKTGIIITIPVLFITLIGLYLTLIIF",
+  "Q00074\tacr3\tQ8NQC8\tCorynebacterium glutamicum (strain ATCC 13032 / DSM 20300 / JCM 1318 / BCRC 11384 / CCUG 27702 / LMG 3730 / NBRC 12168 / NCIMB 10025 / NRRL B-2784 / 534)\tArsenical-resistance protein Acr3\tMTNSTQTRAKPARISFLDKYIPLWIILAMAFGLFLGRSVSGLSGFLGAMEVGGISLPIALGLLVMMYPPLAKVRYDKTKQIATDKHLMGVSLILNWVVGPALMFALAWLFLPDQPELRTGLIIVGLARCIAMVLVWSDMSCGDREATAVLVAINSVFQVAMFGALGWFYLQVLPSWLGLPTTTAQFSFWSIVTSVLVFLGIPLLAGVFSRIIGEKIKGREWYEQKFLPAISPFALIGLLYTIVLLFSLQGDQIVSQPWAVVRLAIPLVIYFVGMFFISLIASKLSGMNYAKSASVSFTAAGNNFELAIAVSIGTFGATSAQAMAGTIGPLIEIPVLVGLVYAMLWLGPKLFPNDPTLPSSARSTSQIINS",
+  "Q00075\tacr3\tA6TP80\tAlkaliphilus metalliredigens (strain QYMF)\tArsenical-resistance protein Acr3\tMGNENVVHEGKGIGFFERYLTVWVAACIIVGVAIGQLLPAVPETLSRWEYAQVSIPVAILIWLMIYPMMLKIDFTSIVEATKKPKGIIVTCVTNWLIKPFTMYLIAAFFFKIVFQNLIPESLANDYLAGAVLLGAAPCTAMVFVWSHLTKGDPAYTLVQVAVNNIILLFAFTPIVAILLGITDVIVPYDTLFLSVVLFIVIPLVGGYLSRKYIVQSKGIEYFENVFLKKFDNVTIVGLLLTLIIIFTFQAEVILSNPLHVLLIAVPLTIQTFFIFFLAYGWSKAWKLPHNVASPAGMIGASNFFELAVAVAITLFGLNSGATLATVVGVLVEVPVMLTLVKISNRTRHWFPEVAREN",
+  "Q00076\tarsD\tP46003\tEscherichia coli\tArsenical resistance operon trans-acting repressor ArsD\tMKTLMVFDPAMCCSTGVCGTDVDQALVDFSTDVQWLKQCGVQIERFNLAQQPMSFVQNEKVKAFIEASGAEGLPLLLLDGETVMAGRYPKRAELARWFGIPLDKVGLAPSGCCGGNTSCC",
+  "Q00077\tarsD\tP52148\tEscherichia coli\tArsenical resistance operon trans-acting repressor ArsD\tMKMLTVFDPAMCCSTGVCGSDVDQVLVNFSADVQWLKGRGVQIERYNLAHEPMSFVENEKAKAFLEASGAEGLPLLLLDGETVMAGRYPKRAELARWFGIPLEKVGLASTSCCGGKTSCC",
+  "Q00078\tarsH\tP74312\tSynechocystis sp. (strain ATCC 27184 / PCC 6803 / Kazusa)\tNADPH-dependent quinone reductase ArsH (EC 1.6.5.2) (Arsenical resistance operon protein ArsH)\tMTDFNHPPRILFLYGSLRERSYSRLLAEEAGRIITTMGAETKFFDPRELPLRGQVLDSHPKVQELLELSQWSEGQVWSSPEMHGNITGILKNQIDWIPLEIGSIRPTQGRTLAVMQVSGGSQSFNAVNTMRILGRWMRMFTIPNQSSVAKAYQEFHEDGTMKDSPYRDRVVDVMEELYKFTLLLRDKVDYLTDRHSERKAKVNTDG",
+  "Q00079\tarsH\tB7J950\tAcidithiobacillus ferrooxidans (strain ATCC 23270 / DSM 14882 / CIP 104768 / NCIMB 8455) (Ferrobacillus ferrooxidans (strain ATCC 23270))\tNADPH-dependent FMN reductase ArsH (EC 1.-.-.-) (Arsenical resistance operon protein ArsH)\tMSGNLPNTDDVLLQVPDVRCLRSAAETDHPPRILLLYGSNRECSYSRLLTLEAERLLRYFGAETRVFHPTGLPLPDDAPVTHPKVVELQELVEWSEGQVWCSPERHGAMTGVFKSQVDWIPLNSGAIRPTQGKTLALMQVCGGSQSFNAVNQMRILGRWLRMLTIPNQSSVPKAFLEFDDGGRMKPSAYYDRVVDVMEELMKFTLLTRGNSDYLVDRYSERKESAEELSRRVNLQNL",
+  "Q00080\tarsH\tQ7UC03\tShigella flexneri\tNADPH-dependent FMN reductase ArsH (EC 1.-.-.-) (Arsenical resistance operon protein ArsH)\tMRLRHLSDPDSLPALDKSFAIERPALGLAPDAPPVRILLLYGSLRARSFSRLAVEEAARLLQFFGAETRIFDPSDLPLPDQVQSDDHPAVKELRALSEWSEGQVWCSPERHGQITSVMKAQIDHLPLEMAGIRPTQGRTLAVMQVSGGSQSFNAVNTLRLLGRWMRMFTIPNQSSIAKAFQEFDAAGRMKPSPYYDRIADVMEELVRFTALVRPHREALTDRYSERKAAGHVIDEATDLSSIAIAPQPLPESETS",
+  "Q00081\tarsH\tQ92R45\tRhizobium meliloti (strain 1021) (Ensifer meliloti) (Sinorhizobium meliloti)\tNADPH-dependent FMN reductase ArsH (EC 1.-.-.-) (Arsenical resistance operon protein ArsH)\tMSDDDSSHDLPAANLQQLRLPDSASLRPAFSTHRPRILILYGSLRTVSYSRLLAEEARRLLEFFGAEVKVFDPSGLPLPDAAPVSHPKVQELRELSIWSEGQVWVSPERHGAMTGIMKAQIDWIPLSTGSIRPTQGKTLAVMQVSGGSQSFNAVNQMRILGRWMRMITIPNQSSVAKAFQEFDANGRMKPSSYYDRVVDVMEELVKFTLLTRDCSAYLTDRYSERKESAAELEHRVTLKSV",
+  "Q00082\tarsI\tD1A230\tThermomonospora curvata (strain ATCC 19995 / DSM 43183 / JCM 3096 / KCTC 9072 / NBRC 15933 / NCIMB 10081 / Henssen B9)\tTrivalent organoarsenical cleaving enzyme (EC 1.13.11.-) (C-As lyase) (Methylarsonous acid demethylase) (MAs(III) demethylase)\tMSRVQLALRVPDLEASIGFYSKLFGTGPAKVRPGYANFAIAEPPLKLVLIEGAGEDATRLDHLGVEVEDSAQVGHAARRLKESGLATVEENDTACCYAVQDKVWVTGPGGEPWEVYVVKGDADTLAKADDSACCTPRDSGSAGAAVGADCC",
+  "Q00083\tarsI\tA0A059WI14\tBacillus sp. (strain MD1)\tTrivalent organoarsenical cleaving enzyme (EC 1.13.11.-) (Arsenic inducible gene ArsI) (C-As lyase) (Methylarsonous acid demethylase) (MAs(III) demethylase)\tMKYAHVGLNVTNLEKSIEFYSKLFGAEPVKVKPDYAKFLLESPGLNFTLNLRDEVNGNQVGHFGIQVESTEEVVAHKNRLAENGILSQYDEINTTCCYALQDKFWIHDPDGNEWEFFYTKTTVEENSTHPPTCCVNEPNVEKAECCSPTASSNKDTSNCCS",
+  "Q00084\tarsR\tO24973\tHelicobacter pylori (strain ATCC 700392 / 26695) (Campylobacter pylori)\tTranscriptional regulatory protein ArsR\tMIEVLMIEDDIELAEFLSEFLLQHGIHVTNYDEPYTGISAANTQNYDLLLLDLTLPNLDGLEVCRRISKQKHIPIIISSARSDVEDKIKALDYGADDYLPKPYDPKELLARIQSLLRRSHKKEEVSEPGDANIFRVDKDSREVYMHEKKLDLTRAEYEILSLLISKKGYVFSRESIAIESESINPESSNKSIDVIIGRLRSKIEKNPKQPQYIISVRGIGYKLEY",
+  "Q00085\tarsR\tP37309\tEscherichia coli (strain K12)\tArsenical resistance operon repressor\tMSFLLPIQLFKILADETRLGIVLLLSELGELCVCDLCTALDQSQPKISRHLALLRESGLLLDRKQGKWVHYRLSPHIPAWAAKIIDEAWRCEQEKVQAIVRNLARQNCSGDSKNICS",
+  "Q00086\tarsR\tP15905\tEscherichia coli\tArsenical resistance operon repressor\tMLQLTPLQLFKNLSDETRLGIVLLLREMGELCVCDLCMALDQSQPKISRHLAMLRESGILLDRKQGKWVHYRLSPHIPSWAAQIIEQAWLSQQDDVQVIARKLASVNCSGSSKAVCI",
+  "Q00087\tarsR\tP30338\tStaphylococcus aureus\tArsenical resistance operon repressor\tMSYKELSTILKILSDSSRLEILDLLSCGELCACDLLEHFQFSQPTLSHHMKSLVDNELVTTRKDGNKHWYQLNHAILDDIIQNLNIINTSNQRCVCKNVKSGDC",
+  "Q00088\tarsR\tP45949\tBacillus subtilis (strain 168)\tArsenical resistance operon repressor\tMDETKSELLRKYEQKFKALADQKRLEIMYELCQRGKTCVCDLTEIFEVTQSKLSYHLKILLDANLITKETKGTWSYYDLNDEEVNGLLSEELCCIFRKKGEGDCC",
+  "Q00089\tarsR\tP52144\tEscherichia coli\tArsenical resistance operon repressor\tMPEIASLQLFKILSDETRLGIVLLLREMGELCVCDLCTALEQSQPKTSRHLAMLRESGLLLDRKQGKWVHYRLSPHIPSWAALVIEQAWLSQQDDVQAIARKLASANCSGSGKAVCI",
+  "Q00090\tarsR\tQ01256\tStaphylococcus xylosus\tArsenical resistance operon repressor\tMSYKELSTILKVLSDPSRLEILDLLSCGELCACDLLEHFQFSQPTLSHHMKSLVDNELVTTRKNGNKHMYQLNHEFLDYINQNLDIINTSDQGCACKNMKSGEC"
+))
+
+stopifnot(nrow(QUERY_PROTEINS)==90L,!anyDuplicated(QUERY_PROTEINS$query_id),
+ all(QUERY_PROTEINS$gene%in%MARKERS$gene),
+ all(grepl("^[ACDEFGHIKLMNPQRSTVWYBXZJUO]+$",QUERY_PROTEINS$sequence)),
+ all(nchar(QUERY_PROTEINS$sequence)>=40L))
+QUERY_SOURCES$query_url <- vapply(QUERY_SOURCES$gene,function(g) {
+  q <- paste0("(gene_exact:",g,") AND (taxonomy_id:2) AND (reviewed:true)")
+  paste0("https://rest.uniprot.org/uniprotkb/stream?query=",URLencode(q,reserved=TRUE),
+   "&format=tsv&fields=accession,id,gene_primary,gene_names,protein_name,organism_name,organism_id,sequence")
+},character(1))
+write_csv(QUERY_SOURCES,"10_optional_BLAST_query_provenance")
+```
+
+# Catalogue download, normalization and reference-screen functions
+
+```{r full-catalogue-functions, include=FALSE}
+# Full UHGG catalogue: resumable public-reference I/O and auditable name matching.
+# Statistical thresholds are NEVER selected using these reference results.
+CATALOGUE_ENGINE_VERSION <- "UHGG202_allrep_safe_taxonomy_v1"
+UHGG_BASE <- paste0("https://ftp.ebi.ac.uk/pub/databases/metagenomics/",
+                    "mgnify_genomes/human-gut/v2.0.2")
+UHGG_METADATA_URL <- paste0(UHGG_BASE,"/genomes-all_metadata.tsv")
+ref_url <- function(id,suffix) {
+  paste0(UHGG_BASE,"/species_catalogue/",substr(id,1,11),"/",id,"/genome/",id,suffix)
+}
+canonical_taxon <- function(x) {
+  # Formatting only. Meaningful letters/digits, GTDB suffixes, R-7 and UCG codes remain.
+  x <- trimws(as.character(x)); x[is.na(x)] <- ""
+  x <- gsub("\u00a0"," ",x,fixed=TRUE)
+  x <- tolower(iconv(x,from="",to="ASCII//TRANSLIT",sub=""))
+  x[is.na(x)] <- ""
+  x <- sub("^(g|s)_+","",x)
+  gsub("[^a-z0-9]","",x)
+}
+rank_value <- function(x,rank) {
+  vapply(strsplit(as.character(x),";",fixed=TRUE),function(parts) {
+    hit <- parts[startsWith(parts,paste0(rank,"__"))]
+    if(length(hit)) sub(paste0("^",rank,"__"),"",hit[1]) else ""
+  },character(1))
+}
+marker_symbols <- function(x,genes) {
+  # An annotation symbol, not an arbitrary description/domain, is required.
+  if(length(x)!=1L || is.na(x) || !nzchar(trimws(x))) return(character())
+  if(grepl("family|domain|like|putative|regulator of",x,ignore.case=TRUE)) return(character())
+  pieces <- trimws(unlist(strsplit(x,"[;,|/]")))
+  key <- function(y) gsub("[^a-z0-9]","",tolower(y))
+  unique(genes[key(genes) %in% key(pieces)])
+}
+annotation_matches <- function(preferred,gene) {
+  if(length(preferred)!=length(gene)) stop("Annotation vector lengths differ")
+  vapply(seq_along(gene),function(i) {
+    !is.na(gene[i]) && gene[i] %in% marker_symbols(preferred[i],MARKERS$gene)
+  },logical(1))
+}
+header_key <- function(x) gsub("[^a-z0-9]","",tolower(x))
+atomic_rds <- function(object,path) {
+  tmp <- paste0(path,".partial");saveRDS(object,tmp)
+  if(file.exists(path))unlink(path)
+  if(!file.rename(tmp,path))stop("Cannot commit cache checkpoint: ",path)
+  invisible(path)
+}
+DOWNLOAD_LOG <- list()
+cache_roots <- function() {
+  roots <- c(REFERENCE_CACHE,LEGACY_REFERENCE_CACHE)
+  unique(roots[nzchar(roots) & dir.exists(roots)])
+}
+
+ref_file_ok <- function(path,type) {
+  if(!file.exists(path) || is.na(file.info(path)$size) || file.info(path)$size<8)return(FALSE)
+  h <- tryCatch(readLines(path,n=30L,warn=FALSE,encoding="UTF-8"),error=function(e)character())
+  if(!length(h) || any(grepl("^\\s*<(html|!doctype)|Access denied",h,ignore.case=TRUE)))return(FALSE)
+  if(type=="fasta")return(startsWith(h[1],">"))
+  if(type=="metadata")return(all(c("Genome","Species_rep","Lineage") %in% strsplit(h[1],"\t",fixed=TRUE)[[1]]))
+  if(type=="annotation")return(any(grepl("^#?query\t",h)&grepl("Preferred_name",h,fixed=TRUE)))
+  FALSE
+}
+fetch_reference <- function(url,dest,type,force=FALSE) {
+  dir.create(dirname(dest),recursive=TRUE,showWarnings=FALSE)
+  addlog <- function(status,detail="") {
+    bytes <- if(file.exists(dest))unname(file.info(dest)$size)else NA_real_
+    md5 <- if(file.exists(dest))unname(tools::md5sum(dest))else NA_character_
+    DOWNLOAD_LOG[[length(DOWNLOAD_LOG)+1L]] <<- data.frame(url=url,path=dest,type=type,
+      status=status,bytes=bytes,md5=md5,checked_at=as.character(Sys.time()),detail=detail)
+  }
+  if(!force && ref_file_ok(dest,type)) {addlog("validated_local_cache");return(dest)}
+  if(!force) {
+    roots <- cache_roots(); bn <- basename(dest)
+    subdir <- switch(type,metadata="uhgg",annotation="annotations",fasta="proteomes")
+    possible <- unique(c(file.path(roots,bn),file.path(roots,subdir,bn)))
+    for(p in possible)if(ref_file_ok(p,type)) {
+      if(!file.copy(p,dest,overwrite=TRUE))next
+      if(unname(tools::md5sum(p))!=unname(tools::md5sum(dest)))stop("Cache-copy checksum mismatch")
+      addlog("copied_validated_cache",p);return(dest)
+    }
+  }
+  if(OFFLINE_REFERENCES) {addlog("unavailable_offline");stop("Reference unavailable offline: ",basename(dest))}
+  old <- getOption("timeout");options(timeout=max(900,old));on.exit(options(timeout=old),add=TRUE)
+  tmp <- paste0(dest,".partial");on.exit(unlink(tmp),add=TRUE)
+  errors <- character()
+  for(attempt in seq_len(DOWNLOAD_ATTEMPTS)) {
+    if(file.exists(tmp))unlink(tmp)
+    ok <- tryCatch({
+      if(requireNamespace("curl",quietly=TRUE)) {
+        h <- curl::new_handle(connecttimeout=30,timeout=if(type=="metadata")900 else 180,
+                              followlocation=TRUE,failonerror=TRUE)
+        curl::curl_download(url,tmp,quiet=TRUE,mode="wb",handle=h)
+      } else {
+        status <- utils::download.file(url,tmp,mode="wb",method="libcurl",quiet=TRUE)
+        if(!identical(as.integer(status),0L))stop("download.file returned ",status)
+      }
+      if(!ref_file_ok(tmp,type))stop("Downloaded file does not have the required format")
+      TRUE
+    },error=function(e){errors <<- c(errors,conditionMessage(e));FALSE})
+    if(ok) {
+      if(!file.copy(tmp,dest,overwrite=TRUE))stop("Cannot save reference: ",dest)
+      addlog("downloaded",paste("attempt",attempt));return(dest)
+    }
+    if(attempt<DOWNLOAD_ATTEMPTS)Sys.sleep(min(4,attempt))
+  }
+  addlog("failed",paste(unique(errors),collapse=" | "))
+  stop("Reference download failed: ",basename(dest),"; ",paste(unique(errors),collapse=" | "))
+}
+flush_downloads <- function()write_csv(bind_rows_safe(DOWNLOAD_LOG),"26_reference_download_manifest")
+
+load_catalogue <- function(path) {
+  md <- data.table::fread(path,sep="\t",header=TRUE,quote="",data.table=FALSE,
+                         colClasses="character",na.strings=c("","NA","-"),showProgress=FALSE)
+  need <- c("Genome","Species_rep","Lineage","Completeness","Contamination","Sample_accession")
+  if(!all(need%in%names(md)))stop("Unexpected UHGG metadata schema: ",paste(setdiff(need,names(md)),collapse=", "))
+  if(anyNA(md$Genome)||anyNA(md$Species_rep)||anyDuplicated(md$Genome))stop("Invalid/nonunique genome IDs in metadata")
+  ids <- sort(unique(md$Species_rep));j <- match(ids,md$Genome)
+  if(anyNA(j))stop("Some species representatives have no metadata row")
+  rr <- take_rows(md,j)
+  if(any(rr$Genome!=rr$Species_rep))stop("Representative identities do not reconcile")
+  if(!all(grepl("^MGYG[0-9]{9}(\\.[0-9]+)?$",ids)))stop("Unexpected representative accession format")
+  counts <- table(md$Species_rep)
+  sam <- aggregate(md$Sample_accession,by=list(species_rep=md$Species_rep),
+    FUN=function(x)length(unique(x[!is.na(x)&nzchar(x)])))
+  d <- data.frame(species_rep=ids,gtdb_genus=rank_value(rr$Lineage,"g"),
+    gtdb_species=rank_value(rr$Lineage,"s"),gtdb_family=rank_value(rr$Lineage,"f"),
+    lineage=rr$Lineage,n_genomes_in_cluster=as.integer(counts[ids]),
+    n_source_samples=sam$x[match(ids,sam$species_rep)],
+    completeness=suppressWarnings(as.numeric(rr$Completeness)),
+    contamination=suppressWarnings(as.numeric(rr$Contamination)),
+    catalogue_version="UHGG_v2.0.2",stringsAsFactors=FALSE)
+  d$genus_key <- canonical_taxon(d$gtdb_genus)
+  gc <- table(d$genus_key)
+  d$genus_representatives_in_catalogue <- as.integer(gc[d$genus_key])
+  d$annotation_url <- vapply(ids,ref_url,character(1),suffix="_eggNOG.tsv")
+  d$proteome_url <- vapply(ids,ref_url,character(1),suffix=".faa")
+  audit <- data.frame(metadata_rows=nrow(md),species_clusters=length(ids),
+    representative_rows=nrow(d),metadata_md5=unname(tools::md5sum(path)),
+    catalogue_version="UHGG_v2.0.2",metadata_path=path,
+    metadata_url=UHGG_METADATA_URL,checked_at=as.character(Sys.time()),
+    scope="Every species representative; not all constituent strains")
+  list(representatives=d,audit=audit)
+}
+empty_mapping <- function()data.frame(feature=character(),species_rep=character(),
+  gtdb_genus=character(),gtdb_species=character(),link_type=character(),status=character(),
+  mapping_source=character(),mapping_basis=character(),stringsAsFactors=FALSE)
+empty_suggestions <- function()data.frame(feature=character(),source_label=character(),
+  target_rank=character(),target_name=character(),reason=character(),
+  approved=logical(),evidence_url=character(),stringsAsFactors=FALSE)
+match_catalogue <- function(features,catalogue,crosswalk=NULL) {
+  maps <- list();suggest <- list();features <- sort(unique(features))
+  if(!is.null(crosswalk)&&nrow(crosswalk)) {
+    required <- c("source_label","target_rank","target_name","approved","evidence_url")
+    if(!all(required%in%names(crosswalk)))stop("Crosswalk requires: ",paste(required,collapse=", "))
+    approved <- tolower(trimws(as.character(crosswalk$approved)))%in%c("true","1","yes")
+    crosswalk <- take_rows(crosswalk,approved)
+    if(nrow(crosswalk)&&any(is.na(crosswalk$evidence_url)|!grepl("^https?://|^doi:",crosswalk$evidence_url)))
+      stop("Every approved taxonomy crosswalk needs a supporting URL or DOI")
+    if(any(!crosswalk$target_rank%in%c("genus","species","representative")))stop("Invalid crosswalk target rank")
+  }
+  for(tax in features) {
+    key <- canonical_taxon(tax);ix <- which(nzchar(key)&catalogue$genus_key==key)
+    kind <- "Formatting-normalized genus";src <- UHGG_METADATA_URL;basis <- "Case/spacing/punctuation only"
+    one <- list()
+    append_map <- function(j,kind,source,basis) {
+      if(length(j))one[[length(one)+1L]] <<- data.frame(feature=tax,
+        species_rep=catalogue$species_rep[j],gtdb_genus=catalogue$gtdb_genus[j],
+        gtdb_species=catalogue$gtdb_species[j],link_type=kind,
+        status="Human-gut catalogue representative available",mapping_source=source,mapping_basis=basis)
+    }
+    append_map(ix,kind,src,basis)
+    # Composite 16S labels remain explicitly composite; no species is inferred.
+    if(key=="escherichiashigella")append_map(which(catalogue$genus_key%in%c("escherichia","shigella")),
+      "Composite 16S proxy","https://gtdb.ecogenomic.org/faq",
+      "Escherichia-Shigella composite label; NOT observed species identity")
+    if(!is.null(crosswalk)&&nrow(crosswalk)) {
+      cw <- take_rows(crosswalk,canonical_taxon(crosswalk$source_label)==key)
+      for(k in seq_len(nrow(cw))) {
+        vals <- switch(cw$target_rank[k],genus=catalogue$gtdb_genus,
+                       species=catalogue$gtdb_species,representative=catalogue$species_rep)
+        hit <- which(canonical_taxon(vals)==canonical_taxon(cw$target_name[k]))
+        if(!length(hit))warning("Approved crosswalk target absent in pinned catalogue: ",cw$target_name[k])
+        append_map(hit,"Documented crosswalk",cw$evidence_url[k],
+                   paste(cw$source_label[k],"to",cw$target_rank[k],cw$target_name[k]))
+      }
+    }
+    d <- bind_rows_safe(one,empty_mapping())
+    if(nrow(d))d <- take_rows(d,!duplicated(d$species_rep))
+    if(!nrow(d)) {
+      d <- data.frame(feature=tax,species_rep=NA_character_,gtdb_genus=NA_character_,
+        gtdb_species=NA_character_,link_type="Unresolved",status="No supported taxonomic bridge; not gene absence",
+        mapping_source=UHGG_METADATA_URL,mapping_basis="No automatic fuzzy/group/suffix collapse")
+      # Suggestions are deliberately NOT used by the scientific mapping or plots.
+      gn <- unique(catalogue$gtdb_genus[nzchar(catalogue$gtdb_genus)])
+      distance <- as.numeric(utils::adist(key,canonical_taxon(gn)))
+      ord <- head(order(distance,gn),5L)
+      if(length(ord))suggest[[length(suggest)+1L]] <- data.frame(feature=tax,source_label=tax,
+        target_rank="genus",target_name=gn[ord],reason=paste0("Lexical suggestion only; edit distance ",distance[ord]),
+        approved=FALSE,evidence_url="")
+      # Named species-group epithet: a review hint, NOT a species-level match.
+      label <- gsub("_"," ",sub("^g_+","",tolower(tax)))
+      tokens <- strsplit(trimws(sub(" group$","",label))," +")[[1]]
+      if(length(tokens)>=2L) {
+        ep <- tokens[length(tokens)]
+        si <- which(grepl(paste0(" ",ep,"($|_[A-Z]+$)"),catalogue$gtdb_species,ignore.case=TRUE))
+        if(length(si))suggest[[length(suggest)+1L]]<-data.frame(feature=tax,source_label=tax,
+          target_rank="species",target_name=unique(catalogue$gtdb_species[si]),
+          reason="Species-name resemblance only: 16S group membership needs evidence",approved=FALSE,evidence_url="")
+      }
+    }
+    maps[[length(maps)+1L]] <- d
+  }
+  list(mapping=bind_rows_safe(maps,empty_mapping()),suggestions=bind_rows_safe(suggest,empty_suggestions()))
+}
+empty_annotation <- function()data.frame(species_rep=character(),protein_id=character(),gene=character(),
+  preferred_name=character(),description=character(),kegg_ko=character(),annotation_md5=character(),
+  annotation_url=character(),annotation_match=character(),stringsAsFactors=FALSE)
+parse_annotation <- function(path,sg) {
+  h <- readLines(path,n=50L,warn=FALSE,encoding="UTF-8")
+  k <- which(grepl("^#?query\t",h)&grepl("Preferred_name",h,fixed=TRUE))
+  if(!length(k))stop("eggNOG header not found")
+  rr <- data.table::fread(path,skip=k[1]-1L,header=TRUE,sep="\t",quote="",data.table=FALSE,
+    colClasses="character",na.strings=c("","-","NA"),showProgress=FALSE)
+  names(rr) <- header_key(names(rr))
+  if(!all(c("query","preferredname","description")%in%names(rr)))stop("Required eggNOG columns absent")
+  if(nrow(rr)&&any(is.na(rr$query)|!startsWith(rr$query,paste0(sg,"_"))|duplicated(rr$query)))
+    stop("eggNOG protein IDs are missing, duplicated or from a different representative")
+  matches <- lapply(rr$preferredname,marker_symbols,genes=MARKERS$gene)
+  take <- which(lengths(matches)>0L);out <- list();md5 <- unname(tools::md5sum(path))
+  for(i in take) {
+    genes <- matches[[i]];n <- length(genes)
+    out[[length(out)+1L]]<-data.frame(species_rep=rep(sg,n),protein_id=rep(rr$query[i],n),gene=genes,
+      preferred_name=rep(rr$preferredname[i],n),description=rep(rr$description[i],n),
+      kegg_ko=rep(if("keggko"%in%names(rr))rr$keggko[i]else NA_character_,n),
+      annotation_md5=rep(md5,n),annotation_url=rep(ref_url(sg,"_eggNOG.tsv"),n),
+      annotation_match=rep("Preferred gene symbol; case/spacing/punctuation normalized",n))
+  }
+  list(hits=bind_rows_safe(out,empty_annotation()),n_proteins=nrow(rr),md5=md5)
+}
+screen_annotation <- function(sg) {
+  dest <- file.path(REFERENCE_CACHE,"annotations",paste0(sg,"_eggNOG.tsv"))
+  checkpoint <- file.path(REFERENCE_CACHE,"parsed",paste0(sg,"_annotation.rds"))
+  for(attempt in 1:2) {
+    ans <- tryCatch({
+      path <- fetch_reference(ref_url(sg,"_eggNOG.tsv"),dest,"annotation",force=attempt>1L)
+      checksum <- unname(tools::md5sum(path))
+      cached <- if(file.exists(checkpoint))tryCatch(readRDS(checkpoint),error=function(e)NULL)else NULL
+      if(!is.null(cached)&&identical(cached$engine,CATALOGUE_ENGINE_VERSION)&&identical(cached$md5,checksum)) {
+        parsed <- cached
+      } else {
+        parsed <- parse_annotation(path,sg);parsed$engine <- CATALOGUE_ENGINE_VERSION
+        atomic_rds(parsed,checkpoint)
+      }
+      list(ok=TRUE,hits=parsed$hits,n_proteins=parsed$n_proteins,md5=checksum,detail="Parsed successfully")
+    },error=function(e)list(ok=FALSE,hits=empty_annotation(),n_proteins=NA_integer_,
+                           md5=NA_character_,detail=conditionMessage(e)))
+    if(ans$ok||OFFLINE_REFERENCES)break
+  }
+  ans
+}
+# Local edge-case tests run before any public download.
+stopifnot(canonical_taxon(" g__Bifido bacterium ")==canonical_taxon("Bifido_bacterium"),
+ canonical_taxon("[Eubacterium] coprostanoligenes group")==canonical_taxon("g_eubacterium_coprostanoligenes_group"),
+ canonical_taxon("Bacteroides_A")!=canonical_taxon("Bacteroides"),
+ canonical_taxon("Christensenellaceae R-7 group")!=canonical_taxon("Christensenella"),
+ canonical_taxon("Clostridium sensu stricto 1")!=canonical_taxon("Clostridium"),
+ identical(marker_symbols(" ARS-C ",MARKERS$gene),"arsC"),
+ identical(marker_symbols("arsC; arsR",MARKERS$gene),c("arsC","arsR")),
+ length(marker_symbols("ArsR/SmtB family",MARKERS$gene))==0L,
+ length(marker_symbols("arsC_like",MARKERS$gene))==0L)
+
+```
+
+# Early BLAST self-test before catalogue downloads
+
+```{r early-blast-control, include=FALSE}
+# Fail before thousands of downloads if the explicitly requested executable cannot run.
+if(RUN_BLAST) {
+  if(!length(BLASTP)||!nzchar(BLASTP)||!file.exists(BLASTP))
+    stop("RUN_BLAST=TRUE, but blastp.exe was not found. Set BLASTP to the installed executable.")
+  BLASTP <- normalizePath(BLASTP,winslash="/",mustWork=TRUE)
+  early_blast_control <- function() {
+    old <- getwd();on.exit(setwd(old),add=TRUE)
+    setwd(BLAST_WORK)
+    writeLines(c(paste0(">",QUERY_PROTEINS$query_id[1]),QUERY_PROTEINS$sequence[1]),"control.faa")
+    if(file.exists("control.tsv"))unlink("control.tsv")
+    log <- suppressWarnings(system2(BLASTP,args=c("-query","control.faa","-subject","control.faa",
+      "-evalue","1e-10","-max_hsps","1","-outfmt",shQuote("6 pident length qlen"),
+      "-out","control.tsv"),stdout=TRUE,stderr=TRUE))
+    status <- attr(log,"status");if(is.null(status))status <- 0L
+    writeLines(log,file.path(ROOT,"logs","BLAST_EARLY_PREFLIGHT.txt"))
+    if(status!=0L||!file.exists("control.tsv")||file.info("control.tsv")$size==0L)
+      stop("BLAST early self-alignment failed. See logs/BLAST_EARLY_PREFLIGHT.txt; no catalogue downloads started.")
+    d <- read.delim("control.tsv",header=FALSE,sep="\t")
+    if(ncol(d)!=3L||!any(d[[1]]>=99.9 & d[[2]]/d[[3]]>=.99))
+      stop("BLAST self-alignment failed the expected identity/coverage checks")
+    message("BLAST executable and short-file self-alignment check passed.")
+  }
+  early_blast_control()
+}
+
+```
+
+# Enumerate all representatives and screen their gene annotations
+
+```{r full-catalogue-annotations, message=TRUE, warning=TRUE}
+# All species representatives in the versioned catalogue, without top-N limits.
+for(sub in c("metadata","annotations","parsed","proteomes","blast"))
+  dir.create(file.path(REFERENCE_CACHE,sub),recursive=TRUE,showWarnings=FALSE)
+metadata_path <- file.path(REFERENCE_CACHE,"metadata","genomes-all_metadata.tsv")
+override_metadata <- if(nzchar(LOCAL_UHGG_METADATA)) mami_absolute(LOCAL_UHGG_METADATA) else ""
+if(nzchar(override_metadata)) {
+  if(!ref_file_ok(override_metadata,"metadata"))stop("LOCAL_UHGG_METADATA is not a valid metadata TSV")
+  if(normalizePath(override_metadata,winslash="/",mustWork=TRUE)!=
+     normalizePath(metadata_path,winslash="/",mustWork=FALSE)) {
+    if(!file.copy(override_metadata,metadata_path,overwrite=TRUE))stop("Cannot copy metadata override")
+    if(unname(tools::md5sum(metadata_path))!=unname(tools::md5sum(override_metadata)))stop("Metadata checksum mismatch")
+  }
+} else {
+  metadata_path <- fetch_reference(UHGG_METADATA_URL,metadata_path,"metadata")
+}
+cat_obj <- load_catalogue(metadata_path)
+REF_GENOMES <- cat_obj$representatives
+catalogue_audit <- cat_obj$audit
+# Release-level integrity check, NOT a cap or a subset-selection rule.
+if(nrow(REF_GENOMES)!=4744L || catalogue_audit$metadata_rows!=289232L)
+  stop("Metadata does not match the pinned complete UHGG v2.0.2 inventory (4,744 representatives / 289,232 genomes). ",
+       "Do not use a truncated file or another release under this version label.")
+write_csv(catalogue_audit,"08a_catalogue_metadata_audit")
+write_csv(REF_GENOMES,"08_full_catalogue_representatives")
+message("Full catalogue loaded: ",nrow(REF_GENOMES)," species representatives; no screening cap.")
+
+# Optional documented synonym crosswalk; no external file is required by default.
+crosswalk <- NULL
+if(nzchar(TAXONOMY_CROSSWALK_FILE)) {
+  if(!file.exists(TAXONOMY_CROSSWALK_FILE))stop("TAXONOMY_CROSSWALK_FILE does not exist")
+  crosswalk <- read.csv(TAXONOMY_CROSSWALK_FILE,stringsAsFactors=FALSE,check.names=FALSE)
+}
+mapped <- match_catalogue(unique(associations$feature),REF_GENOMES,crosswalk)
+mapping <- mapped$mapping
+write_csv(mapping,"11_targeted_genus_to_reference_mapping")
+write_csv(mapped$suggestions,"11b_UNAPPROVED_taxonomy_suggestions")
+write_csv(empty_suggestions(),"11c_taxonomy_crosswalk_blank_template")
+if(!is.null(crosswalk))write_csv(crosswalk,"11d_supplied_taxonomy_crosswalk")
+valid_map <- take_rows(mapping,!is.na(mapping$species_rep)&nzchar(mapping$species_rep))
+matching_audit <- bind_rows_safe(lapply(unique(associations$feature),function(g) {
+  mm <- take_rows(valid_map,valid_map$feature==g)
+  data.frame(feature=g,n_catalogue_representatives=nrow(REF_GENOMES),
+    n_mapped_representatives=length(unique(mm$species_rep)),
+    n_mapped_species_labels=length(unique(mm$gtdb_species[nzchar(mm$gtdb_species)])),
+    mapping_status=if(nrow(mm))"Mapped without a numerical cap"else"Unresolved; review suggestions, not gene absence")
+}),data.frame(feature=character(),n_catalogue_representatives=integer(),
+ n_mapped_representatives=integer(),n_mapped_species_labels=integer(),mapping_status=character()))
+write_csv(matching_audit,"11e_genus_catalogue_coverage")
+
+ids <- if(ANNOTATION_SCOPE=="all_representatives")REF_GENOMES$species_rep else unique(valid_map$species_rep)
+# Prioritize relevant representatives for checkpoint utility, but do not omit the remainder.
+annotation_ids <- unique(c(intersect(valid_map$species_rep,ids),sort(ids)))
+annotation_manifest <- data.frame(species_rep=annotation_ids,
+  requested=rep(TRUE,length(annotation_ids)),completed=rep(FALSE,length(annotation_ids)),
+  n_proteins=rep(NA_integer_,length(annotation_ids)),n_marker_proteins=rep(NA_integer_,length(annotation_ids)),
+  md5=rep(NA_character_,length(annotation_ids)),detail=rep("Not started",length(annotation_ids)))
+annotation_parts <- vector("list",length(annotation_ids))
+write_csv(annotation_manifest,"27_annotation_execution")
+consecutive_failures <- 0L
+for(i in seq_along(annotation_ids)) {
+  sg <- annotation_ids[i]
+  ans <- screen_annotation(sg)
+  annotation_manifest$completed[i] <- ans$ok
+  annotation_manifest$n_proteins[i] <- ans$n_proteins
+  annotation_manifest$n_marker_proteins[i] <- if(ans$ok)length(unique(ans$hits$protein_id))else NA_integer_
+  annotation_manifest$md5[i] <- ans$md5
+  annotation_manifest$detail[i] <- ans$detail
+  annotation_parts[[i]] <- ans$hits
+  consecutive_failures <- if(ans$ok)0L else consecutive_failures+1L
+  if(consecutive_failures>=8L) {
+    write_csv(annotation_manifest,"27_annotation_execution");flush_downloads()
+    stop("Eight consecutive annotation failures: stopping to avoid repeated failing requests. ",
+         "The inventory is INCOMPLETE, checkpoints are retained. Inspect 26/27 tables, fix connectivity and rerun.")
+  }
+  if(i==1L||i%%25L==0L||i==length(annotation_ids)) {
+    write_csv(annotation_manifest,"27_annotation_execution");flush_downloads()
+    message("Annotations: ",i,"/",length(annotation_ids)," attempted; ",
+      sum(annotation_manifest$completed)," completed. Cached files/checkpoints retained.")
+  }
+}
+REF_HITS <- bind_rows_safe(annotation_parts,empty_annotation())
+REF_HITS <- take_rows(REF_HITS,!duplicated(paste(REF_HITS$species_rep,REF_HITS$protein_id,REF_HITS$gene,sep="|")))
+write_csv(REF_HITS,"09_catalogue_gene_symbol_candidates")
+# Full inventory shows requested, completed, failed and out-of-scope separately.
+j <- match(REF_GENOMES$species_rep,annotation_manifest$species_rep)
+REF_GENOMES$annotation_requested <- !is.na(j)
+REF_GENOMES$annotation_completed <- !is.na(j)&!is.na(annotation_manifest$completed[j])&annotation_manifest$completed[j]
+REF_GENOMES$annotation_proteins <- annotation_manifest$n_proteins[j]
+REF_GENOMES$annotation_md5 <- annotation_manifest$md5[j]
+REF_GENOMES$annotation_status <- ifelse(is.na(j),"Not requested under selected scope",annotation_manifest$detail[j])
+write_csv(REF_GENOMES,"08_full_catalogue_representatives")
+candidates <- merge(valid_map,REF_HITS,by="species_rep",all=FALSE,sort=FALSE)
+candidates$sequence_supported <- rep(FALSE,nrow(candidates))
+candidates$reference_evidence <- rep("Annotation-only candidate",nrow(candidates))
+knitr::kable(matching_audit,caption="All mapped species representatives; unresolved taxa are not forced to similar names")
+
+```
+
+# Actual BLAST sequence screen and reference evidence reconciliation
+
+The default requests all species representative proteomes. Partial runs are reported
+as partial; unsearched genes/proteomes are not negative. Within-species pan-genome or
+strain carriage is not estimated from a single representative. Sequence homology and
+computational annotation are candidate evidence, not experimental enzyme activity.
+
+```{r full-catalogue-blast, message=TRUE, warning=TRUE}
+# Homology uses actual public representative proteomes. Every requested search is audited.
+blast_log <- data.frame(species_rep=character(),completed=logical(),hits=integer(),
+  query_md5=character(),subject_md5=character(),executable_md5=character(),detail=character())
+blast_hits <- data.frame(query_id=character(),protein_id=character(),pident=numeric(),
+  alignment_length=integer(),query_length=integer(),subject_length=integer(),evalue=numeric(),
+  bitscore=numeric(),qstart=integer(),qend=integer(),sstart=integer(),send=integer(),
+  species_rep=character(),gene=character(),accession=character(),qcoverage=numeric(),scoverage=numeric())
+blast_ids <- if(BLAST_SCOPE=="all_representatives")REF_GENOMES$species_rep else unique(valid_map$species_rep)
+blast_ids <- unique(c(intersect(valid_map$species_rep,blast_ids),sort(blast_ids)))
+read_blast <- function(path,sg) {
+  if(!file.exists(path))stop("BLAST did not create the requested output file")
+  if(file.info(path)$size==0L)return(take_rows(blast_hits,integer(0)))
+  d <- read.delim(path,header=FALSE,sep="\t",quote="",stringsAsFactors=FALSE)
+  if(ncol(d)!=12L)stop("Unexpected BLAST tabular schema")
+  names(d) <- names(blast_hits)[1:12]
+  for(v in names(d)[3:12])d[[v]] <- num(d[[v]],v)
+  j <- match(d$query_id,QUERY_PROTEINS$query_id)
+  if(anyNA(j))stop("Unknown BLAST query ID; stale result rejected")
+  if(any(!is.finite(d$pident)|d$pident<0|d$pident>100|d$query_length<=0|d$subject_length<=0))
+    stop("Invalid BLAST alignment values")
+  d$species_rep <- rep(sg,nrow(d));d$gene <- QUERY_PROTEINS$gene[j];d$accession <- QUERY_PROTEINS$accession[j]
+  d$qcoverage <- (abs(d$qend-d$qstart)+1)/d$query_length
+  d$scoverage <- (abs(d$send-d$sstart)+1)/d$subject_length
+  if(any(d$qcoverage>1.000001|d$scoverage>1.000001))stop("Invalid alignment coverage")
+  d
+}
+run_local_blast <- function(qfile,sfile,outfile) {
+  log <- suppressWarnings(system2(BLASTP,args=c("-query",qfile,"-subject",sfile,
+    "-evalue","1e-10","-max_target_seqs","1000000","-max_hsps","1","-num_threads",as.character(BLAST_THREADS),
+    "-outfmt",shQuote(paste("6 qseqid sseqid pident length qlen slen",
+      "evalue bitscore qstart qend sstart send")),"-out",outfile),stdout=TRUE,stderr=TRUE))
+  code <- attr(log,"status");if(is.null(code))code <- 0L
+  if(code!=0L)stop(paste(log,collapse=" | "))
+  log
+}
+run_blast_catalogue <- function(ids) {
+  if(!length(BLASTP)||!nzchar(BLASTP)||!file.exists(BLASTP))stop("RUN_BLAST=TRUE but blastp is unavailable")
+  BLASTP <<- normalizePath(BLASTP,winslash="/",mustWork=TRUE)
+  job <- normalizePath(BLAST_WORK,winslash="/",mustWork=TRUE)
+  oldwd <- getwd();on.exit(setwd(oldwd),add=TRUE);setwd(job)
+  if(.Platform$OS.type=="windows"&&nchar(job)>150L)stop("Use a short local ROOT for BLAST")
+  version <- system2(BLASTP,"-version",stdout=TRUE,stderr=TRUE)
+  version_code <- attr(version,"status")
+  if(!is.null(version_code)&&version_code!=0L)stop("blastp version test failed")
+  writeLines(version,file.path(ROOT,"logs","BLAST_version.txt"))
+  query_lines <- unlist(lapply(seq_len(nrow(QUERY_PROTEINS)),function(i)
+    c(paste0(">",QUERY_PROTEINS$query_id[i]),QUERY_PROTEINS$sequence[i])),use.names=FALSE)
+  writeLines(query_lines,"query.faa",useBytes=TRUE)
+  writeLines(c(paste0(">",QUERY_PROTEINS$query_id[1]),QUERY_PROTEINS$sequence[1]),"self.faa")
+  if(file.exists("self.tsv"))unlink("self.tsv")
+  run_local_blast("self.faa","self.faa","self.tsv")
+  control <- read_blast("self.tsv","positive_control")
+  if(!nrow(control)||!any(control$pident>=99.9&control$qcoverage>=.99&control$scoverage>=.99))
+    stop("BLAST self-alignment control failed")
+  qmd5 <- unname(tools::md5sum("query.faa"));emd5 <- unname(tools::md5sum(BLASTP))
+  logs <- list();parts <- list();consecutive_failures <- 0L
+  for(i in seq_along(ids)) {
+    sg <- ids[i];smd5 <- NA_character_
+    one <- tryCatch({
+      dest <- file.path(REFERENCE_CACHE,"proteomes",paste0(sg,".faa"))
+      source <- fetch_reference(ref_url(sg,".faa"),dest,"fasta")
+      # Validate ALL subject IDs and sequence characters before using a cached alignment.
+      seq_lines <- readLines(source,warn=FALSE)
+      headers <- sub("^>","",seq_lines[startsWith(seq_lines,">")])
+      headers <- sub("[[:space:]].*$","",headers)
+      body <- seq_lines[!startsWith(seq_lines,">")&nzchar(seq_lines)]
+      if(!length(headers)||any(!startsWith(headers,paste0(sg,"_")))||anyDuplicated(headers)||
+         !length(body)||any(!grepl("^[ACDEFGHIKLMNPQRSTVWYBXZJUO*]+$",toupper(body))))
+        stop("Invalid subject FASTA contents or representative-specific protein IDs")
+      smd5 <- unname(tools::md5sum(source))
+      signature <- list(query_md5=qmd5,subject_md5=smd5,executable_md5=emd5,
+        version=paste(version,collapse=" | "),evalue=1e-10,outfmt=12L,max_hsps=1L,
+        max_target_seqs=1000000L,release="M07_full_catalogue_blast_v1")
+      out <- file.path(REFERENCE_CACHE,"blast",paste0(sg,".tsv"))
+      stamp <- paste0(out,".rds")
+      previous <- if(file.exists(stamp))tryCatch(readRDS(stamp),error=function(e)NULL)else NULL
+      reused <- !is.null(previous)&&identical(previous$signature,signature)&&file.exists(out)&&
+        identical(previous$output_md5,unname(tools::md5sum(out)))
+      if(reused) {
+        d <- read_blast(out,sg)
+      } else {
+        if(!file.copy(source,"subject.faa",overwrite=TRUE))stop("Could not stage subject FASTA")
+        if(unname(tools::md5sum("subject.faa"))!=smd5)stop("Staged subject checksum mismatch")
+        if(file.exists("result.tsv"))unlink("result.tsv")
+        command_log <- run_local_blast("query.faa","subject.faa","result.tsv")
+        writeLines(command_log,file.path(ROOT,"logs",paste0(sg,"_blast.txt")))
+        d <- read_blast("result.tsv",sg)
+        if(!file.copy("result.tsv",out,overwrite=TRUE))stop("Cannot save successful BLAST result")
+        atomic_rds(list(signature=signature,output_md5=unname(tools::md5sum(out))),stamp)
+      }
+      if(nrow(d)&&any(!d$protein_id%in%headers))stop("Alignment target is absent from the subject FASTA")
+      list(ok=TRUE,hits=d,detail=if(reused)"Completed; fingerprint-validated BLAST cache"else"Sequence search completed")
+    },error=function(e)list(ok=FALSE,hits=take_rows(blast_hits,integer(0)),detail=conditionMessage(e)))
+    logs[[length(logs)+1L]]<-data.frame(species_rep=sg,completed=one$ok,hits=nrow(one$hits),
+      query_md5=qmd5,subject_md5=smd5,executable_md5=emd5,detail=one$detail)
+    parts[[length(parts)+1L]] <- one$hits
+    consecutive_failures <- if(one$ok)0L else consecutive_failures+1L
+    if(consecutive_failures>=8L) {
+      write_csv(bind_rows_safe(logs,blast_log),"12_BLAST_execution");flush_downloads()
+      stop("Eight consecutive requested BLAST failures. No completion receipt is written; ",
+           "inspect 12_BLAST_execution.csv. Successful fingerprinted jobs remain cached.")
+    }
+    if(i==1L||i%%10L==0L||i==length(ids)) {
+      write_csv(bind_rows_safe(logs,blast_log),"12_BLAST_execution");flush_downloads()
+      message("BLAST: ",i,"/",length(ids)," attempted; ",sum(vapply(logs,function(x)x$completed,logical(1)))," completed.")
+    }
+  }
+  list(log=bind_rows_safe(logs,blast_log),hits=bind_rows_safe(parts,blast_hits))
+}
+if(RUN_BLAST&&length(blast_ids)) {
+  bb <- run_blast_catalogue(blast_ids);blast_log <- bb$log;blast_hits <- bb$hits
+} else {
+  blast_log <- data.frame(species_rep=blast_ids,completed=rep(FALSE,length(blast_ids)),
+    hits=rep(NA_integer_,length(blast_ids)),query_md5=rep(NA_character_,length(blast_ids)),
+    subject_md5=rep(NA_character_,length(blast_ids)),executable_md5=rep(NA_character_,length(blast_ids)),
+    detail=rep("Not requested; annotation-only execution",length(blast_ids)))
+}
+write_csv(blast_log,"12_BLAST_execution");write_csv(blast_hits,"13_all_BLAST_alignments")
+pass <- take_rows(blast_hits,is.finite(blast_hits$evalue)&blast_hits$evalue<=1e-10&
+  blast_hits$pident>=35&blast_hits$qcoverage>=.70&blast_hits$scoverage>=.60)
+pass <- take_rows(pass,order(pass$evalue,-pass$bitscore))
+passed <- paste(pass$species_rep,pass$protein_id,pass$gene,sep="|")
+pass <- take_rows(pass,!duplicated(passed))
+passed <- paste(pass$species_rep,pass$protein_id,pass$gene,sep="|")
+write_csv(pass,"14_BLAST_threshold_passes")
+# Merge the annotation and homology evidence for the SAME genome/protein/marker.
+REFERENCE_GENES <- REF_HITS
+present <- paste(REFERENCE_GENES$species_rep,REFERENCE_GENES$protein_id,REFERENCE_GENES$gene,sep="|")
+REFERENCE_GENES$sequence_supported <- present%in%passed
+REFERENCE_GENES$reference_evidence <- ifelse(REFERENCE_GENES$sequence_supported,
+  "Homology + annotation candidate","Annotation-only candidate")
+extra <- take_rows(pass,!passed%in%present)
+if(nrow(extra)) {
+  add <- empty_annotation()
+  add <- data.frame(species_rep=extra$species_rep,protein_id=extra$protein_id,gene=extra$gene,
+    preferred_name=rep("",nrow(extra)),description=rep("Threshold-passing homologue; no matching symbol annotation",nrow(extra)),
+    kegg_ko=rep("",nrow(extra)),annotation_md5=rep(NA_character_,nrow(extra)),
+    annotation_url=vapply(extra$species_rep,ref_url,character(1),suffix="_eggNOG.tsv"),
+    annotation_match=rep("No matching preferred marker symbol",nrow(extra)),
+    sequence_supported=rep(TRUE,nrow(extra)),reference_evidence=rep("Homology-only candidate",nrow(extra)))
+  REFERENCE_GENES <- rbind(REFERENCE_GENES,add)
+}
+if(nrow(REFERENCE_GENES)) {
+  k <- paste(REFERENCE_GENES$species_rep,REFERENCE_GENES$protein_id,sep="|")
+  ng <- tapply(REFERENCE_GENES$gene,k,function(x)length(unique(x)))
+  REFERENCE_GENES$multiple_markers_for_protein <- as.integer(ng[k])>1L
+} else REFERENCE_GENES$multiple_markers_for_protein <- logical(0)
+REFERENCE_GENES$broad_regulator_family_caution <- REFERENCE_GENES$gene=="arsR"
+REFERENCE_GENES$functional_confirmation <- rep(FALSE,nrow(REFERENCE_GENES))
+candidates <- merge(valid_map,REFERENCE_GENES,by="species_rep",all=FALSE,sort=FALSE)
+write_csv(REFERENCE_GENES,"28_all_reference_candidate_proteins")
+write_csv(candidates,"15_candidate_reference_gene_links")
+flush_downloads()
+# A missing query is not a negative sequence search for that marker.
+query_coverage <- data.frame(gene=MARKERS$gene,
+  n_reviewed_queries=vapply(MARKERS$gene,function(g)sum(QUERY_PROTEINS$gene==g),integer(1)))
+query_coverage$homology_assessable <- query_coverage$n_reviewed_queries>0L
+query_coverage$interpretation <- ifelse(query_coverage$homology_assessable,
+  "Searchable with the frozen reviewed queries; absence of hits is not functional proof",
+  "No query in frozen reviewed panel; homology for this marker NOT assessed")
+write_csv(query_coverage,"29_reviewed_query_marker_coverage")
+
+# Per-representative/per-marker statuses retain incomplete vs negative distinctions.
+marker_calls <- expand.grid(species_rep=REF_GENOMES$species_rep,gene=MARKERS$gene,stringsAsFactors=FALSE)
+aidx <- match(marker_calls$species_rep,annotation_manifest$species_rep)
+bidx <- match(marker_calls$species_rep,blast_log$species_rep)
+marker_calls$annotation_completed <- !is.na(aidx)&!is.na(annotation_manifest$completed[aidx])&annotation_manifest$completed[aidx]
+marker_calls$blast_completed <- RUN_BLAST & !is.na(bidx)&!is.na(blast_log$completed[bidx])&blast_log$completed[bidx]
+marker_calls$marker_has_query <- query_coverage$homology_assessable[match(marker_calls$gene,query_coverage$gene)]
+ck <- paste(marker_calls$species_rep,marker_calls$gene,sep="|")
+ak <- paste(REF_HITS$species_rep,REF_HITS$gene,sep="|")
+hk <- paste(pass$species_rep,pass$gene,sep="|")
+marker_calls$annotation_candidate <- ck%in%ak
+marker_calls$homology_candidate <- ck%in%hk
+marker_calls$status <- ifelse(marker_calls$annotation_candidate|marker_calls$homology_candidate,
+  "Candidate detected: inspect protein-level evidence",
+  ifelse(marker_calls$annotation_completed&marker_calls$blast_completed&marker_calls$marker_has_query,
+    "Not detected in this representative under this screen",
+    ifelse(marker_calls$annotation_completed,"No annotation candidate; sequence evidence unassessed/incomplete",
+           "Reference evidence unassessed/incomplete")))
+write_csv(marker_calls,"30_all_representative_marker_screen_status")
+coverage_summary <- data.frame(
+ metric=c("Catalogue genomes in metadata","All species representatives","Annotation files requested",
+          "Annotation files completed","Annotation files failed","Taxonomically mapped representatives",
+          "BLAST searches requested","BLAST searches completed","BLAST searches failed",
+          "Reference proteins with any candidate evidence"),
+ value=c(catalogue_audit$metadata_rows,nrow(REF_GENOMES),nrow(annotation_manifest),
+         sum(annotation_manifest$completed),sum(!annotation_manifest$completed),
+         length(unique(valid_map$species_rep)),if(RUN_BLAST)length(blast_ids)else 0L,
+         if(RUN_BLAST)sum(blast_log$completed)else 0L,
+         if(RUN_BLAST)sum(!blast_log$completed)else 0L,
+         length(unique(paste(REFERENCE_GENES$species_rep,REFERENCE_GENES$protein_id)))))
+write_csv(coverage_summary,"31_reference_search_coverage")
+REFERENCE_INCOMPLETE <- any(!annotation_manifest$completed) || (RUN_BLAST&&any(!blast_log$completed))
+REFERENCE_STATUS <- if(REFERENCE_INCOMPLETE)"INCOMPLETE reference search: inspect coverage/failed downloads"else
+  paste0("Completed requested scope: annotations=",ANNOTATION_SCOPE,"; BLAST=",if(RUN_BLAST)BLAST_SCOPE else "not requested")
+writeLines(REFERENCE_STATUS,file.path(ROOT,"logs","REFERENCE_COVERAGE_STATUS.txt"))
+if(REFERENCE_INCOMPLETE)warning(REFERENCE_STATUS,". Partial data are never labelled exhaustive or negative.")
+knitr::kable(coverage_summary,caption="Full-catalogue coverage: attempted/completed/failed are distinct")
+
+```
+
+# Display gate: statistical follow-up AND human-gut gene-reference evidence
+
+All tests are calculated before this gate. Main networks and selected-link forest
+plots include only associations passing the configured statistical rule AND at
+least one qualifying gene candidate on a mapped human-gut reference representative.
+Only representatives with such a candidate are drawn. All other associations,
+reference mappings and candidate checks are still exported; omitted means not
+shown in this focused display, not an invalid association or a gene-absence claim.
+
+`FOLLOWUP_RULE <- "nominal"` retains exploratory p < 0.05 links and shows their
+unaltered q values. `"FDR"` requires q(all milk) < 0.05; no rule is relaxed if zero
+links pass. The external-reference restriction NEVER changes the FDR denominator.
+
+```{r display-evidence-gate}
+display_selection <- reference_plot_selection(primary,associations,mapping,candidates,
+  REF_GENOMES,MARKERS,rule=FOLLOWUP_RULE)
+plot_associations <- display_selection$associations
+plot_candidates <- display_selection$candidates
+plot_mapping <- display_selection$mapping
+write_csv(display_selection$audit,"18_plot_selection_audit_all_tests")
+write_csv(display_selection$counts,"19_plot_selection_counts")
+write_csv(plot_associations,"20_plotted_associations")
+write_csv(plot_candidates,"21_plotted_reference_candidates")
+write_csv(plot_mapping,"22_plotted_reference_mapping")
+write_csv(display_selection$strict_FDR,"23_milk_wide_FDR_and_reference_links")
+write_csv(display_selection$candidate_checks,"24_candidate_display_evidence_checks")
+plot_paths <- merge(plot_associations,plot_candidates,by="feature",all=FALSE,sort=FALSE)
+write_csv(plot_paths,"25_plotted_association_gene_paths")
+knitr::kable(display_selection$counts,
+  caption="Display selection only: complete statistical families and FDR remain unchanged")
+```
+
+# Networks: study associations and external evidence are different edge types
+
+Figures below are separate for maternal and infant faecal microbiota. Gene names
+belong to external reference proteins, not to measured participant genomes.
+Where no link passes both gates, the audit reports zero and no empty main figure
+is exported. Derived arsenic sums are not independent replications.
+
+```{r figures, include=FALSE}
+
+plot_catalogue_coverage <- function() {
+  d <- coverage_summary
+  s <- scene_new(960,190+36*nrow(d),"UHGG search coverage and unresolved evidence")
+  sc_text(s,24,30,"Reference search coverage: attempted is not completed",18,face="bold")
+  sc_text(s,24,57,paste("Annotations:",ANNOTATION_SCOPE,"| BLAST:",if(RUN_BLAST)BLAST_SCOPE else "not requested"),10)
+  for(i in seq_len(nrow(d))) {
+    y <- 90+i*36
+    sc_line(s,24,y+17,936,y+17,COL$faint,.6)
+    sc_text(s,30,y,d$metric[i],11)
+    sc_text(s,900,y,format(d$value[i],big.mark=","),12,face="bold",anchor="end")
+  }
+  sc_text(s,24,s$height-30,"Species representatives only; not all strains. Unresolved taxonomy and download failures are not gene absence.",9,colour=COL$muted)
+  save_scene(s,"C_catalogue_coverage")
+}
+plot_catalogue_coverage()
+plot_network("Maternal")
+plot_forest("Maternal")
+plot_network("Infant")
+plot_forest("Infant")
+if(EXPORT_ALL_TEST_FORESTS) {
+  plot_forest("Maternal",all_tests=TRUE)
+  plot_forest("Infant",all_tests=TRUE)
+}
+write_html_gallery()
+```
+
+All figures below are existing vector files, inserted as HTML. Knitting does not
+open a PNG device to display them. Full-resolution exports are in `figures/`.
+
+```{r gallery, results='asis', echo=FALSE}
+registry <- bind_rows_safe(FIGURE_REGISTRY)
+cat('<div class="mami-network-gallery">\n')
+for(i in seq_len(nrow(registry))) {
+  svg <- readLines(registry$svg[i],warn=FALSE,encoding="UTF-8")
+  svg <- svg[!grepl("^<\\?xml",svg)]
+  svg <- sub('<svg ', '<svg style="max-width:100%;height:auto" ',svg,fixed=TRUE)
+  cat('<h3>',xml_escape(registry$title[i]),'</h3>\n',sep="")
+  cat(paste(svg,collapse="\n"),'\n')
+  cat('<p>Export status: ',xml_escape(registry$status[i]),'</p>\n',sep="")
+}
+cat('</div>\n')
+```
+
+# Consolidated tables, provenance and completion
+
+```{r exports}
+paths <- merge(associations,candidates,by="feature",all.x=TRUE,sort=FALSE)
+write_csv(paths,"16_association_reference_gene_paths")
+reference_denominators <- bind_rows_safe(lapply(unique(associations$feature),function(g) {
+  ids <- unique(valid_map$species_rep[valid_map$feature==g])
+  aj <- match(ids,annotation_manifest$species_rep);bj <- match(ids,blast_log$species_rep)
+  cg <- take_rows(candidates,candidates$feature==g)
+  data.frame(feature=g,n_mapped_representatives=length(ids),
+    annotation_requested=sum(!is.na(aj)),
+    annotation_completed=sum(annotation_manifest$completed[aj],na.rm=TRUE),
+    blast_requested=if(RUN_BLAST)sum(!is.na(bj))else 0L,
+    blast_completed=if(RUN_BLAST)sum(blast_log$completed[bj],na.rm=TRUE)else 0L,
+    representatives_with_candidate=length(unique(cg$species_rep)),
+    candidate_proteins=length(unique(paste(cg$species_rep,cg$protein_id,sep="|"))),
+    interpretation=if(!length(ids))"Taxonomy unresolved; not gene absence"else
+      "Denominators are reference representatives, not participant prevalence")
+}),data.frame(feature=character(),n_mapped_representatives=integer(),annotation_requested=integer(),
+ annotation_completed=integer(),blast_requested=integer(),blast_completed=integer(),
+ representatives_with_candidate=integer(),candidate_proteins=integer(),interpretation=character()))
+write_csv(reference_denominators,"32_genus_reference_search_denominators")
+notes <- data.frame(
+ item=c("Population","Timing","Follow-up rule","Filtering","Zero replacement","FDR scope",
+        "Catalogue scope","Reference scope completed","Taxonomic normalization","Unresolved taxonomy",
+        "Gene annotation","Sequence evidence","No reviewed query","Species resolution","No gene detection",
+        "Network display","No causality","Query reference panel","Catalogue counts","Arsenic assay"),
+ meaning=c("Maternal and infant stool at one month postpartum, analysed separately",
+   paste("Milk at recorded month",MILK_MONTH,"only; maternal third-trimester diet is not an exposure in this module"),
+   paste(FOLLOWUP_RULE,"selected after the complete milk-only family was tested"),
+   "RA >=0.01 in >=50% of each eligible subset; all-zero and constant-RA taxa not tested",
+   "Only microbial zeros replaced; primary 1e-6 and sensitivities 1e-7, 1e-5 plus raw RA",
+   "q_endpoint / q_group / q_all_milk stay separate; plotting never recalculates a selected-subset FDR",
+   paste("UHGG v2.0.2:",nrow(REF_GENOMES),"species representatives; not all constituent strains or databases"),
+   REFERENCE_STATUS,
+   "Case/spacing/underscores/hyphens/brackets normalized; meaningful suffixes/digits retained; no automatic fuzzy match",
+   "Group labels, species-like names and unverified synonyms require a documented approved crosswalk",
+   "Specific preferred-symbol annotation; formatting normalized, not a generic domain/description match",
+   "E<=1e-10, identity>=35%, query span>=70%, subject span>=60%; candidates, not experimentally proven functions",
+   "Markers lacking a reviewed query are NOT assessed by homology; annotation searches remain possible",
+   "Public-reference species/SGBs/genes are NOT species/SGBs/genes detected in participant 16S",
+   "No candidate found means not detected in this representative under this screen, never genus-level absence",
+   "Only selected cohort associations AND candidate proteins on mapped gut representatives; all others retained in tables",
+   "Networks are evidence maps, not causal, transfer, methylation-capacity or metabolic-flux networks",
+   "90 reviewed UniProt sequences from the source-provenanced 27 October 2026 snapshot; no live refresh claimed",
+   "Genome/source-sample catalogue counts are not population prevalence or within-SGB gene prevalence",
+   "Analytical method, units and LOD/LOQ still require laboratory confirmation"),stringsAsFactors=FALSE)
+write_csv(notes,"17_methods_and_interpretation_limits")
+wb <- openxlsx::createWorkbook()
+tables <- list(All_primary=primary,Selected_links=associations,All_sensitivities=effects,
+ Subset_filtering=filtering,Analysis_status=analysis_status,Catalogue=REF_GENOMES,
+ Catalogue_audit=catalogue_audit,Reference_coverage=coverage_summary,
+ Annotation_execution=annotation_manifest,Annotation_candidates=REF_HITS,
+ Reference_gene_evidence=REFERENCE_GENES,Marker_status=marker_calls,
+ Genus_reference_map=mapping,Taxonomy_suggestions=mapped$suggestions,
+ Genus_coverage=reference_denominators,Candidate_links=candidates,
+ Association_gene_paths=paths,BLAST_status=blast_log,Query_provenance=QUERY_SOURCES,
+ Marker_query_coverage=query_coverage,Interpretation=notes,
+ Plot_gate_all_tests=display_selection$audit,Plot_gate_counts=display_selection$counts,
+ Plotted_links=plot_associations,Plotted_candidates=plot_candidates,Plotted_mapping=plot_mapping,
+ FDR_supported_paths=display_selection$strict_FDR,Candidate_display_checks=display_selection$candidate_checks,
+ Plotted_gene_paths=plot_paths,Figure_manifest=bind_rows_safe(FIGURE_REGISTRY),
+ Graphics_devices=bind_rows_safe(DEVICE_ATTEMPTS))
+for(nm in names(tables)) {
+ d <- tables[[nm]];if(!ncol(d))d <- data.frame(status=character())
+ # Never silently truncate an oversized Excel sheet; a full CSV is the canonical fallback.
+ if(nrow(d)>1048575L) {
+   write_csv(d,paste0("FULL_",nm))
+   d <- data.frame(status="Full table exceeds Excel row limit; use corresponding FULL_ CSV",n_rows=nrow(d))
+ }
+ openxlsx::addWorksheet(wb,nm);openxlsx::writeData(wb,nm,d,withFilter=nrow(d)>0)
+ openxlsx::freezePane(wb,nm,firstRow=TRUE)
+ openxlsx::addStyle(wb,nm,openxlsx::createStyle(textDecoration="bold",fgFill="#E7EEF3"),
+   rows=1,cols=seq_len(ncol(d)),gridExpand=TRUE)
+ openxlsx::setColWidths(wb,nm,cols=seq_len(ncol(d)),widths=18)
+}
+openxlsx::saveWorkbook(wb,file.path(ROOT,"07_MILK_GENUS_FULL_CATALOGUE.xlsx"),overwrite=TRUE)
+writeLines(c("Source workbook:",INPUT_FILE,"Workbook MD5:",unname(tools::md5sum(INPUT_FILE)),
+ paste("Catalogue metadata:",metadata_path),paste("Metadata MD5:",unname(tools::md5sum(metadata_path))),
+ paste("Catalogue:",UHGG_METADATA_URL),paste("Annotation scope:",ANNOTATION_SCOPE),
+ paste("BLAST scope:",BLAST_SCOPE),paste("RUN_BLAST:",RUN_BLAST),
+ paste("Taxonomy crosswalk:",if(nzchar(TAXONOMY_CROSSWALK_FILE))TAXONOMY_CROSSWALK_FILE else "None"),
+ paste("Crosswalk MD5:",if(nzchar(TAXONOMY_CROSSWALK_FILE))unname(tools::md5sum(TAXONOMY_CROSSWALK_FILE))else "None"),
+ REFERENCE_STATUS,paste("Results:",ROOT),capture.output(sessionInfo())),
+ file.path(ROOT,"logs","session_and_provenance.txt"))
+figure_manifest <- bind_rows_safe(FIGURE_REGISTRY)
+plot_warnings <- if(nrow(figure_manifest))any(figure_manifest$status!="complete")else FALSE
+run_status <- if(REFERENCE_INCOMPLETE)"partial_reference_coverage"else
+ if(plot_warnings)"complete_with_graphics_warnings"else"complete"
+write.csv(data.frame(module="07_milk_genus_gene_network",status=run_status,
+ version=PIPELINE_VERSION,analysis_signature=ANALYSIS_SIGNATURE,input_md5=INPUT_MD5,
+ script_path=if(length(ACTIVE_FILE)==1L && file.exists(ACTIVE_FILE))
+   normalizePath(ACTIVE_FILE,winslash="/")else NA_character_,
+ script_md5=if(length(ACTIVE_FILE)==1L && file.exists(ACTIVE_FILE))unname(tools::md5sum(ACTIVE_FILE))else NA_character_,
+ release=MODULE07_RELEASE,completed_at=as.character(Sys.time()),
+ source_md5=unname(tools::md5sum(INPUT_FILE)),milk_month=MILK_MONTH,n_primary_tests=nrow(primary),
+ n_selected=nrow(associations),n_plotted_links=nrow(plot_associations),
+ n_plotted_genera=length(unique(plot_associations$feature)),n_plotted_FDR=nrow(display_selection$strict_FDR),
+ plot_rule=FOLLOWUP_RULE,blast_requested=RUN_BLAST,blast_scope=BLAST_SCOPE,annotation_scope=ANNOTATION_SCOPE,
+ catalogue="UHGG_v2.0.2",n_catalogue_representatives=nrow(REF_GENOMES),
+ n_annotation_completed=sum(annotation_manifest$completed),
+ n_blast_completed=if(RUN_BLAST)sum(blast_log$completed)else 0L,
+ n_figures=nrow(figure_manifest),n_png=sum(!is.na(figure_manifest$png)),
+ n_pdf=sum(!is.na(figure_manifest$pdf)),n_svg=nrow(figure_manifest)),receipt,row.names=FALSE)
+cat("Results folder:",ROOT,"\nReference status:",REFERENCE_STATUS,"\n")
+cat("Open GALLERY.html. Inspect 31_reference_search_coverage.csv and 11b_UNAPPROVED_taxonomy_suggestions.csv.\n")
+knitr::kable(display_selection$counts,caption="Separate maternal and infant display outcomes; full statistical families retained")
+
+```
+
+# Reference provenance
+
+Full UHGG v2.0.2 species-representative metadata, GTDB taxonomy and eggNOG annotations:
+<https://ftp.ebi.ac.uk/pub/databases/metagenomics/mgnify_genomes/human-gut/v2.0.2/README_v2.0.2.txt>.
+The exact source URLs and annotation-file MD5 checksums are exported.
+BLAST queries are the source-provenanced reviewed bacterial UniProt snapshot; query-specific URLs and original file checksums are
+exported without making a live request. No participant identifiers or data are
+sent to those services. The workbook itself is never modified.
+
+This module expands the reference catalogue while retaining a transparent
+association-to-reference follow-up. A narrower FDR family is not independent
+replication, and the analysis should be described as exploratory. The complete
+network tables are suitable for further styling in Cytoscape; retain the evidence
+and statistics columns when changing the layout.
+
+# Figure-selection statement for the manuscript
+
+> Networks and accompanying selected-link forest plots were restricted to milk
+> arsenic–genus associations meeting the stated statistical follow-up threshold
+> and having at least one mapped UHGG human-gut representative with an
+> arsenic-related candidate protein. The statistical threshold and candidate
+> evidence tier are explicitly labelled. All associations, unsupported mappings,
+> selection exclusions, effect sizes and original multiple-testing-adjusted values
+> are supplied in the complete tables. This post-analysis display restriction did
+> not redefine the FDR family. Reference-species and gene evidence does not
+> establish species or gene presence, expression or arsenic transformation in
+> the study participants.
